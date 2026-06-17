@@ -1,145 +1,263 @@
-# Daily Work-Log — iOS Shortcut Setup
+# Daily Work-Log — iOS 18 Shortcut Setup
 
-Everything runs on your iPhone. When you arrive at the office, a location automation fires, logs your arrival to this repo, and shows a banner: **"In since 08:32 — leave by 17:32"**.
+When you arrive at the office, a location automation fires automatically.
+Your iPhone immediately shows a banner — **"In since 08:32 — leave by 17:32"** —
+then quietly logs the entry to this GitHub repo in the background.
 
 Time target: **9 hours** from arrival.
 
 ---
 
-## Step 1 — Create a GitHub Personal Access Token
+## Prerequisites
 
-1. Open Safari → go to **github.com/settings/personal-access-tokens/new** (sign in if needed).
-2. Note name: `iPhone Work Log`
-3. Expiration: No expiration (or 1 year).
-4. Repository access: **Only selected repositories** → pick `cwinter1/automation`.
-5. Under **Permissions → Repository → Contents** → set to **Read and Write**.
-6. Tap **Generate token** and **copy it now** (you won't see it again).
-7. Save it somewhere safe (Notes app, password manager).
+| What | Where to check |
+|---|---|
+| iPhone running **iOS 18** | Settings → General → Software Update |
+| **Shortcuts** app installed | Pre-installed on iOS 18; if missing, get it from the App Store |
+| Location Services enabled for Shortcuts | Settings → Privacy & Security → Location Services → Shortcuts → **Always** |
+| Background App Refresh ON | Settings → General → Background App Refresh → Shortcuts → ON |
+| Low Power Mode **OFF** when commuting | Settings → Battery (Low Power Mode blocks background automation) |
 
 ---
 
-## Step 2 — Build the Shortcut
+## Step 1 — Create a GitHub Personal Access Token (PAT)
 
-Open the **Shortcuts** app → tap **+** (top right) → name it `Work Log Arrival`.
+You need this so the Shortcut can write to this repo on your behalf.
 
-Add these actions **in order**:
+1. On your iPhone, open **Safari** and go to:
+   `github.com/settings/personal-access-tokens/new`
+   (Sign in to GitHub if prompted.)
+2. Fill in:
+   - **Token name:** `iPhone Work Log`
+   - **Expiration:** No expiration
+3. Under **Repository access** → choose **Only selected repositories** → add `cwinter1/automation`
+4. Under **Permissions → Repository permissions → Contents** → set to **Read and Write**
+5. Scroll down → tap **Generate token**
+6. **Copy the token immediately** (you cannot see it again after leaving the page)
+7. Paste it into your **Notes app** temporarily — you will need it in Step 2
 
-### 1. Get current date
-- Search for action: **Date**
-- Setting: **Current Date**
-- Tap the result variable → rename to `Arrival`
+---
 
-### 2. Format arrival time (HH:mm)
-- Search for action: **Format Date**
-- Date: `Arrival`
-- Format: **Custom** → type `HH:mm`
-- Tap result variable → rename to `ArrivalHHMM`
+## Step 2 — Build the Shortcut (12 actions)
 
-### 3. Format today's date (yyyy-MM-dd)
-- Add another **Format Date**
-- Date: `Arrival`
-- Format: **Custom** → type `yyyy-MM-dd`
-- Tap result variable → rename to `TodayDate`
+Open the **Shortcuts** app → tap the **+** button (top right of the My Shortcuts tab) → tap the name field at the top and name it **`Work Log Arrival`**.
 
-### 4. Calculate leave time
-- Search for action: **Adjust Date**
-- Date: `Arrival`
-- Adjust: **+9 Hours**
-- Tap result variable → rename to `Departure`
+> **How to add actions:** Tap the search bar at the bottom of the screen and type the action name. Tap it to add it.
+>
+> **How to rename a variable:** After an action runs, it produces a coloured result pill. Tap that pill → tap **Rename** → type the new name.
+>
+> **How to insert a variable into a text field:** Tap inside the field → tap the **variable icon** (looks like `{x}`) in the keyboard toolbar → pick the variable.
 
-### 5. Format leave time (HH:mm)
-- Add another **Format Date**
-- Date: `Departure`
-- Format: **Custom** → type `HH:mm`
-- Tap result variable → rename to `LeaveHHMM`
+---
 
-### 6. Build the JSON log entry
-- Search for action: **Text**
-- Type this exactly, inserting variables (tap them from the variable picker):
-  ```
-  {"date":"[TodayDate]","arrived":"[ArrivalHHMM]","leave_by":"[LeaveHHMM]"}
-  ```
-- Tap result variable → rename to `LogJSON`
+### Action 1 — Get the current date and time
 
-### 7. Base64-encode the JSON
-- Search for action: **Encode** (full name: "Encode / Decode")
-- Input: `LogJSON`
-- Encoding: **Base64 Encode**
-- Line Breaks: **OFF** (important — GitHub rejects MIME-wrapped base64)
-- Tap result variable → rename to `LogBase64`
+- Add action: **Current Date**
+- No settings to change
+- Rename the result variable: **`Arrival`**
 
-### 8. Fetch the current file SHA from GitHub
-- Search for action: **Get Contents of URL**
-- URL: `https://api.github.com/repos/cwinter1/automation/contents/work_log/latest.json`
-- Method: **GET**
-- Expand **Headers** → add:
-  | Key | Value |
-  |-----|-------|
-  | `Authorization` | `Bearer PASTE_YOUR_PAT_HERE` |
-  | `Accept` | `application/vnd.github+json` |
-  | `X-GitHub-Api-Version` | `2022-11-28` |
-- Tap result variable → rename to `GHGetResponse`
+---
 
-### 9. Extract the file SHA
-- Search for action: **Get Dictionary Value**
-- Get: **Value** for Key: `sha`
-- From: `GHGetResponse`
-- Tap result variable → rename to `FileSHA`
+### Action 2 — Format arrival time for display
 
-### 10. Upload the updated log entry
-- Add another **Get Contents of URL**
-- URL: `https://api.github.com/repos/cwinter1/automation/contents/work_log/latest.json`
-- Method: **PUT**
-- Headers: same three as step 8, **plus**:
-  | Key | Value |
-  |-----|-------|
-  | `Content-Type` | `application/json` |
-- Request Body: **JSON**
-- Add three JSON fields (tap "+" to add each):
-  | Key | Type | Value |
-  |-----|------|-------|
-  | `message` | Text | `Work log [TodayDate] arrived [ArrivalHHMM]` |
-  | `content` | Text | `LogBase64` (use variable picker) |
-  | `sha` | Text | `FileSHA` (use variable picker) |
+- Add action: **Format Date**
+- **Date:** `Arrival`
+- **Format:** Custom
+  - Tap **Custom** → clear the field → type exactly: `HH:mm`
+- Rename the result variable: **`ArrivalHHMM`**
 
-### 11. Show arrival notification
-- Search for action: **Show Notification**
-- Title: `Work Day Started`
-- Body: `In since [ArrivalHHMM] — leave by [LeaveHHMM]`
-- Play Sound: ON
+> `HH` = 24-hour clock. Example output: `08:32`
+
+---
+
+### Action 3 — Format today's date for the log file
+
+- Add another **Format Date** action
+- **Date:** `Arrival`
+- **Format:** Custom → type exactly: `yyyy-MM-dd`
+- Rename the result variable: **`TodayDate`**
+
+> Example output: `2026-06-17`
+
+---
+
+### Action 4 — Calculate leave time
+
+- Add action: **Adjust Date**
+- **Date:** `Arrival`
+- **Add:** `9` **Hours**
+- Rename the result variable: **`Departure`**
+
+---
+
+### Action 5 — Format leave time for display
+
+- Add another **Format Date** action
+- **Date:** `Departure`
+- **Format:** Custom → type exactly: `HH:mm`
+- Rename the result variable: **`LeaveHHMM`**
+
+---
+
+### Action 6 — Show the notification NOW (before any network call)
+
+> This fires immediately. Even if your internet is slow or the GitHub steps below fail, you already have your banner.
+
+- Add action: **Show Notification**
+- **Title:** `Work Day Started`
+- **Body:** tap the `{x}` icon and insert `ArrivalHHMM`, then type ` — leave by `, then insert `LeaveHHMM`
+  - Result looks like: `In since 08:32 — leave by 17:32`
+- **Play Sound:** ON
+
+---
+
+### Action 7 — Build the JSON log entry
+
+- Add action: **Text**
+- Tap inside the text box and type the following, inserting each variable using the `{x}` picker:
+
+```
+{"date":"TodayDate","arrived":"ArrivalHHMM","leave_by":"LeaveHHMM"}
+```
+
+Replace `TodayDate`, `ArrivalHHMM`, `LeaveHHMM` with the actual variable tokens (tap `{x}` → choose each one).
+
+- Rename the result variable: **`LogJSON`**
+
+---
+
+### Action 8 — Base64-encode the JSON
+
+- Add action: **Encode / Decode** (search for "encode")
+- **Input:** `LogJSON`
+- **Encode / Decode:** Encode
+- **Format:** Base64
+- Rename the result variable: **`LogBase64Raw`**
+
+---
+
+### Action 9 — Strip any line breaks from the base64 output
+
+> iOS sometimes wraps base64 output with line breaks. GitHub rejects wrapped base64. This step removes them.
+
+- Add action: **Replace Text** (search for "replace text")
+- **Text:** `LogBase64Raw`
+- **Find:** tap the Find field → on the keyboard, tap **return once** to insert a newline character (the field will appear to have one blank line inside it)
+- **Replace:** leave completely empty
+- **Regular Expressions:** OFF
+- **Case Sensitive:** OFF
+- Rename the result variable: **`LogBase64`**
+
+---
+
+### Action 10 — Fetch the current SHA from GitHub
+
+> GitHub requires the existing file's SHA to update it. This step retrieves it.
+
+- Add action: **Get Contents of URL**
+- **URL:** `https://api.github.com/repos/cwinter1/automation/contents/work_log/latest.json`
+- **Method:** GET
+- Tap **Show More** (or the expand chevron) to reveal Headers
+- Tap **Add new header** three times and fill in:
+
+| Header name | Value |
+|---|---|
+| `Authorization` | `Bearer ` followed by your PAT (no space between Bearer and your token — paste directly) |
+| `Accept` | `application/vnd.github+json` |
+| `X-GitHub-Api-Version` | `2022-11-28` |
+
+- Rename the result variable: **`GHGetResponse`**
+
+---
+
+### Action 11 — Extract the SHA value
+
+- Add action: **Get Dictionary Value**
+- **Get:** Value
+- **Key:** `sha`
+- **Dictionary:** `GHGetResponse`
+- Rename the result variable: **`FileSHA`**
+
+---
+
+### Action 12 — Write the log entry to GitHub
+
+- Add another **Get Contents of URL** action
+- **URL:** `https://api.github.com/repos/cwinter1/automation/contents/work_log/latest.json`
+- **Method:** PUT
+- Tap **Show More** → add four headers:
+
+| Header name | Value |
+|---|---|
+| `Authorization` | `Bearer YOUR_PAT` (same as Action 10) |
+| `Accept` | `application/vnd.github+json` |
+| `X-GitHub-Api-Version` | `2022-11-28` |
+| `Content-Type` | `application/json` |
+
+- **Request Body:** JSON
+- Tap **+** to add three fields:
+
+| Key | Type | Value |
+|---|---|---|
+| `message` | Text | `Work log ` + insert `TodayDate` + ` arrived ` + insert `ArrivalHHMM` |
+| `content` | Text | insert variable `LogBase64` |
+| `sha` | Text | insert variable `FileSHA` |
 
 ---
 
 ## Step 3 — Set up the Location Automation
 
-1. In Shortcuts, tap the **Automation** tab (bottom center).
-2. Tap **+** → **Personal Automation**.
-3. Choose **Arrive**.
-4. Tap **Choose** next to Location → search for your office address → select it.
-5. Adjust radius to minimum that covers the entrance.
-6. Tap **Next** → tap **Add Action** → search `Work Log Arrival` → select it.
-7. Tap **Next** → **turn OFF "Ask Before Running"** → tap **Done**.
+1. In Shortcuts, tap the **Automation** tab (second tab, clock icon)
+2. Tap **+** (top right) → **New Automation**
+3. Scroll down to **Location** → tap it
+4. Tap **Choose** → search for your office address → select it
+5. Set the trigger to **Arrives**
+6. Adjust the radius circle to just cover your building entrance
+7. Tap **Next**
+8. Tap **New Blank Automation** → tap **+** → search for `Work Log Arrival` → tap it
+9. Tap **Next** → **disable "Ask Before Running"** (toggle it OFF) → tap **Done**
+
+---
+
+## Step 4 — Add a Home Screen button (manual fallback)
+
+For days when the geo-fence misses:
+
+1. In the My Shortcuts tab, long-press **Work Log Arrival**
+2. Tap **Add to Home Screen**
+3. Place it on your first Home Screen page
+4. One tap runs the full Shortcut manually
 
 ---
 
 ## What happens each day
 
-| Event | Action |
-|---|---|
-| You arrive at office | Shortcut fires automatically |
-| GitHub API GET | Fetches current SHA of `work_log/latest.json` |
-| GitHub API PUT | Overwrites the file; commit appears in history |
-| Notification banner | Shows arrival time and 9-hour leave time |
+```
+Walk into office
+        |
+iOS geo-fence fires (or tap Home Screen button)
+        |
+Action 1-5: Compute arrival + leave time   (no internet needed)
+        |
+Action 6: Banner notification fires        (no internet needed)
+          "In since 08:32 — leave by 17:32"
+        |
+Actions 7-12: Log entry written to GitHub  (needs internet)
+              Commit appears in repo history
+```
 
-Your full attendance history is preserved in the Git commit log of this repo (`work_log/latest.json`).
+Your full attendance history is in the Git commit log of `work_log/latest.json`.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| Shortcut doesn't fire | Ensure Location Services → Shortcuts is set to **Always** in iPhone Settings |
-| 401 Unauthorized | PAT expired or wrong — regenerate and paste into both GET and PUT header steps |
-| 409 Conflict on PUT | SHA mismatch — re-run the Shortcut; the GET step fetches fresh SHA each time |
-| Automation asks for confirmation | Turn off "Ask Before Running" in the automation settings |
+| Symptom | Cause | Fix |
+|---|---|---|
+| Automation doesn't fire automatically | Location Services not set to Always | Settings → Privacy & Security → Location Services → Shortcuts → **Always** |
+| Automation fires but asks "Run?" | "Ask Before Running" is ON | Shortcuts → Automation tab → tap the automation → turn it OFF |
+| Notification doesn't appear | Notifications not allowed for Shortcuts | Settings → Notifications → Shortcuts → Allow Notifications ON |
+| 401 Unauthorized on GitHub steps | PAT is wrong or expired | Regenerate PAT on github.com, paste into Action 10 and Action 12 headers |
+| 409 Conflict on PUT | SHA mismatch (fired twice) | Run the Shortcut once manually from the Home Screen button — it will resync |
+| No banner on bad network days | Expected — notification (Action 6) fires before network calls | Nothing to fix; this is by design |
+| Low Power Mode suppresses automation | iOS restricts background activity | Plug in or disable Low Power Mode before commuting |
