@@ -43,6 +43,22 @@ def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_en
     ]
     column_defs = {col.id: col for _, col in exposed}
 
+    # Admin-added columns are always part of the report, regardless of the 4-6
+    # exposed-column selection (which only governs ingested source columns).
+    next_order = len(columns)
+    admin_columns = (
+        db.query(ColumnDef)
+        .filter(ColumnDef.dataset_id == dataset.id, ColumnDef.is_admin_added.is_(True))
+        .order_by(ColumnDef.order_index)
+        .all()
+    )
+    for col in admin_columns:
+        if col.id in column_defs:
+            continue
+        columns.append(GridColumn(column_def_id=col.id, label=col.source_name, order=next_order))
+        column_defs[col.id] = col
+        next_order += 1
+
     rules = db.query(CellEditRule).filter(CellEditRule.dataset_id == dataset.id).all()
     rule_map = {(r.row_index, r.column_def_id): r.options for r in rules}
 
@@ -60,11 +76,23 @@ def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_en
     for row in raw_rows:
         cells = []
         for col_id, col in column_defs.items():
-            options = rule_map.get((row.row_index, col_id))
-            editable = options is not None
             value = edit_map.get((row.row_index, col_id), row.data.get(col.safe_name))
+            if col.is_admin_added:
+                editable = True
+                input_type = col.input_type
+                options = col.options
+            else:
+                options = rule_map.get((row.row_index, col_id))
+                editable = options is not None
+                input_type = "dropdown" if editable else None
             cells.append(
-                GridCell(column_def_id=col_id, value=value, editable=editable, options=options)
+                GridCell(
+                    column_def_id=col_id,
+                    value=value,
+                    editable=editable,
+                    input_type=input_type,
+                    options=options,
+                )
             )
         cells.sort(key=lambda c: next(gc.order for gc in columns if gc.column_def_id == c.column_def_id))
         grid_rows.append(GridRow(row_index=row.row_index, cells=cells))

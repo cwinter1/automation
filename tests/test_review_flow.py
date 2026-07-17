@@ -121,3 +121,68 @@ def test_full_review_and_save_flow():
     assert rows_after_bob[0][0] == "Alice"   # alice's earlier save was not clobbered
     assert rows_after_bob[2][1] == "active"  # bob's correction landed
     assert rows_after_bob[3][0] == "Dana"    # unassigned row carried through untouched
+
+
+def test_admin_added_columns_are_editable_and_save():
+    _setup_dataset()
+
+    admin_client = TestClient(app)
+    admin_client.post("/login", data={"role": "admin", "password": "test-admin-pw"})
+
+    dropdown_col = admin_client.post(
+        "/admin/columns", json={"name": "Priority", "input_type": "dropdown", "options": ["High", "Low"]}
+    ).json()
+    text_col = admin_client.post(
+        "/admin/columns", json={"name": "Comments", "input_type": "text", "options": None}
+    ).json()
+
+    alice_client = TestClient(app)
+    alice_client.post("/login", data={"role": "enduser", "username": "alice", "password": "pw-alice"})
+
+    grid = alice_client.get("/review/grid").json()
+    row0 = next(r for r in grid["rows"] if r["row_index"] == 0)
+
+    priority_cell = next(c for c in row0["cells"] if c["column_def_id"] == dropdown_col["id"])
+    assert priority_cell["editable"] is True
+    assert priority_cell["input_type"] == "dropdown"
+    assert set(priority_cell["options"]) == {"High", "Low"}
+    assert priority_cell["value"] is None  # admin-added column starts blank
+
+    comments_cell = next(c for c in row0["cells"] if c["column_def_id"] == text_col["id"])
+    assert comments_cell["editable"] is True
+    assert comments_cell["input_type"] == "text"
+
+    # Dropdown value outside the admin-defined options is rejected.
+    bad_resp = alice_client.post(
+        "/review/save",
+        json={"edits": [{"row_index": 0, "column_def_id": dropdown_col["id"], "value": "Medium"}]},
+    )
+    assert bad_resp.status_code == 422
+
+    ok_resp = alice_client.post(
+        "/review/save",
+        json={
+            "edits": [
+                {"row_index": 0, "column_def_id": dropdown_col["id"], "value": "High"},
+                {"row_index": 0, "column_def_id": text_col["id"], "value": "looks fine to me"},
+            ]
+        },
+    )
+    assert ok_resp.status_code == 200, ok_resp.text
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                f'SELECT "{dropdown_col["safe_name"]}", "{text_col["safe_name"]}" '
+                'FROM "corrected_flow" WHERE id = 1'
+            )
+        ).fetchone()
+    assert row[0] == "High"
+    assert row[1] == "looks fine to me"
+
+    # Free text past the length cap is rejected.
+    too_long_resp = alice_client.post(
+        "/review/save",
+        json={"edits": [{"row_index": 0, "column_def_id": text_col["id"], "value": "x" * 501}]},
+    )
+    assert too_long_resp.status_code == 422

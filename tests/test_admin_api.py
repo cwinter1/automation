@@ -127,3 +127,71 @@ def test_bulk_row_assignment_can_unassign(client):
     dataset = client.get("/admin/dataset").json()
     row0 = next(r for r in dataset["rows"] if r["row_index"] == 0)
     assert row0["assigned_enduser_id"] is None
+
+
+def test_create_dropdown_admin_column(client):
+    _login_admin(client)
+    _ingest_sample(client)
+
+    resp = client.post(
+        "/admin/columns", json={"name": "Reviewer Notes", "input_type": "dropdown", "options": ["A", "B"]}
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["is_admin_added"] is True
+    assert body["input_type"] == "dropdown"
+    assert body["options"] == ["A", "B"]
+    assert body["safe_name"]
+
+    dataset = client.get("/admin/dataset").json()
+    assert any(c["id"] == body["id"] for c in dataset["columns"])
+
+
+def test_create_text_admin_column(client):
+    _login_admin(client)
+    _ingest_sample(client)
+
+    resp = client.post("/admin/columns", json={"name": "Free Notes", "input_type": "text", "options": None})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["input_type"] == "text"
+    assert body["options"] is None
+
+
+def test_dropdown_admin_column_requires_two_options(client):
+    _login_admin(client)
+    _ingest_sample(client)
+
+    resp = client.post("/admin/columns", json={"name": "Bad", "input_type": "dropdown", "options": ["only-one"]})
+    assert resp.status_code == 400
+
+
+def test_admin_column_rejects_bad_input_type(client):
+    _login_admin(client)
+    _ingest_sample(client)
+
+    resp = client.post("/admin/columns", json={"name": "Bad", "input_type": "checkbox", "options": None})
+    assert resp.status_code == 400
+
+
+def test_delete_admin_column(client):
+    _login_admin(client)
+    _ingest_sample(client)
+    created = client.post(
+        "/admin/columns", json={"name": "Temp", "input_type": "text", "options": None}
+    ).json()
+
+    resp = client.delete(f"/admin/columns/{created['id']}")
+    assert resp.status_code == 204
+
+    dataset = client.get("/admin/dataset").json()
+    assert not any(c["id"] == created["id"] for c in dataset["columns"])
+
+
+def test_cannot_delete_ingested_column(client):
+    _login_admin(client)
+    ingest = _ingest_sample(client)
+    ingested_col_id = ingest["columns"][0]["id"]
+
+    resp = client.delete(f"/admin/columns/{ingested_col_id}")
+    assert resp.status_code == 400

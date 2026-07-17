@@ -46,6 +46,37 @@ interaction":
    the control's event listener near the other form handlers at the bottom of `initAdminPage()`.
 5. `app.css`: reuse existing custom properties; add a new class scoped to the new control.
 
+### Client-side search filter
+
+`attachSearchFilter(inputEl, wrapEl)` in `app.js` is a generic, reusable helper — it wires an
+`<input type="search">` to hide/show `<tbody> <tr>` elements in a given table wrapper by
+substring match against each row's text content. Both the admin raw table and the end-user grid
+use it (`#raw-table-search`, `#grid-search`). It's pure client-side (no backend call), so it's
+the right tool for "filter what's already loaded" — don't add a server-side search endpoint
+unless a table grows large enough that loading everything client-side stops being reasonable.
+Call the filter function again after any re-render (`applyRawTableFilter()` /
+`applyGridFilter()`) so the current search term still applies to freshly-rendered rows.
+
+### Autosave pattern (end-user grid)
+
+Editable cells in `review.html` save on `change` (dropdowns) or a `debounce`d `input` event
+(free text, ~500ms) — see `saveOneEdit()` in `initReviewPage()`. Each editable `<td>` gets its
+own `.cell-status` element showing "Saving…" / "Saved" / the error message, scoped to that cell
+so one failing save doesn't clobber another cell's status. The manual Save button is a fallback
+that resubmits every currently-rendered editable value in one batch — keep both paths (autosave
++ manual) going through the same `POST /review/save` call shape (`{edits: [...]}`), don't give
+manual Save a different request format.
+
+### Admin-added ("custom") columns are visually distinct, not click-to-configure
+
+Ingested columns use the existing "click a cell to flag/configure" pattern (`onCellClick`). A
+custom column (`ColumnDef.is_admin_added`) is configured once at creation time (the "4. Custom
+columns" form) — its cells in the admin raw table are marked with `.admin-col-cell` /
+`.admin-col-header` (a distinct background color) but have no click handler, since there's
+nothing per-cell to configure. Don't add a click-to-flag interaction to custom-column cells; if
+the admin needs to change a custom column's type/options, that's a delete-and-recreate today
+(see the `.claude/skills/backend/SKILL.md` note on the two kinds of editability).
+
 ### Design direction (pending)
 
 The current UI has no real design system — it's functional, not styled to a brand. The intended

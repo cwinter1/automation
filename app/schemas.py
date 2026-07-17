@@ -8,6 +8,15 @@ class ColumnOut(BaseModel):
     source_name: str
     safe_name: str
     order_index: int
+    is_admin_added: bool = False
+    input_type: str | None = None
+    options: list[str] | None = None
+
+
+class AdminColumnIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    input_type: str  # "dropdown" | "text"
+    options: list[str] | None = None
 
 
 class IngestDbRequest(BaseModel):
@@ -107,6 +116,7 @@ class GridCell(BaseModel):
     column_def_id: int
     value: Any
     editable: bool
+    input_type: str | None = None  # "dropdown" | "text", meaningful only when editable
     options: list[str] | None = None
 
 

@@ -46,13 +46,38 @@
   </section>
 
   <section class="panel">
-    <h2>4. Raw data — select columns, flag cells, assign rows</h2>
+    <h2>4. Custom columns</h2>
     <p class="hint">
-      Check 4–6 columns to expose to end users. Click a cell in an exposed column to flag it
-      editable and set its dropdown options (comma-separated) — leave blank to unflag. Use a
+      Add a blank column that doesn't exist in the source data — end users fill it in directly.
+      Choose "Dropdown" to give it a fixed set of options, or "Free text" to let end users type
+      anything (up to 500 characters). Custom columns are always shown to end users, regardless
+      of the 4–6 exposed-column selection below.
+    </p>
+    <form id="admin-column-form">
+      <label>Column name <input type="text" id="admin-column-name" required></label>
+      <label>Type
+        <select id="admin-column-type">
+          <option value="dropdown">Dropdown</option>
+          <option value="text">Free text</option>
+        </select>
+      </label>
+      <label id="admin-column-options-wrap">Options (comma-separated)
+        <input type="text" id="admin-column-options">
+      </label>
+      <button type="submit">Add column</button>
+    </form>
+    <ul id="admin-column-list"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>5. Raw data — select columns, flag cells, assign rows</h2>
+    <p class="hint">
+      Check 4–6 source columns to expose to end users. Click a cell in an exposed column to flag
+      it editable and set its dropdown options (comma-separated) — leave blank to unflag. Use a
       row's Assign dropdown to give that single row to an end user, or tick multiple rows on
       the left and use "Share selected rows with" to assign them all at once.
     </p>
+    <input type="search" id="raw-table-search" class="search-box" placeholder="Search this table…">
     <div class="bulk-assign-bar">
       <span id="bulk-selected-count">0 rows selected</span>
       <label>Share selected rows with

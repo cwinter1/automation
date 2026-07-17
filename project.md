@@ -51,8 +51,19 @@ their own rows independently without one clobbering the other's earlier correcti
     "Share selected rows with", and assign them all in one action
     (`PUT /admin/rows/assign-bulk`). Both paths write to the same `RawRow.assigned_enduser_id`
     field — bulk assignment is a UX convenience, not a different data model.
-- End-user grid: strictly scoped to the caller's assigned rows, read-only vs. dropdown cells
-  driven entirely by server-side rule state.
+- **Custom columns**: admin adds a blank column that doesn't exist in the source data (`POST
+  /admin/columns`, name + type), typed as either a fixed dropdown (admin-defined options) or
+  free text (up to 500 characters). Custom columns are always shown to every end user with an
+  assigned row — they don't go through the 4–6 exposed-column selection or per-cell flagging,
+  since the whole column is inherently editable by design. Deletable via `DELETE
+  /admin/columns/{id}` (ingested columns cannot be deleted this way).
+- End-user grid: strictly scoped to the caller's assigned rows, read-only vs. editable cells
+  (dropdown or free text) driven entirely by server-side rule state. A search box filters the
+  visible rows client-side; the same search box is on the admin's raw-data table.
+- **Autosave**: every cell edit saves immediately (debounced for free-text fields) through the
+  same validated `POST /review/save` endpoint used by the manual Save button — no separate
+  "fast path," no relaxed validation. An inline per-cell status ("Saving…" / "Saved" / error)
+  gives feedback without needing to click Save.
 - Save flow with cross-end-user accumulation (see above) and ownership/option validation that
   rejects tampered requests with a 422.
 

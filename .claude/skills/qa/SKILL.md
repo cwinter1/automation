@@ -37,9 +37,10 @@ rather than creating a new one for a one-off case:
   important test in the suite (see Invariant #2 in `CLAUDE.md`).
 - `tests/test_auth.py` — admin vs. end-user role isolation, redirect-vs-403 behavior.
 - `tests/test_admin_api.py` — exposed-column bounds (4–6), cell-rule validation, single-row and
-  bulk-row assignment.
+  bulk-row assignment, admin-added column create/delete/validation.
 - `tests/test_review_flow.py` — full integration: ingest → configure → two end users each save
-  their own rows → target table has both.
+  their own rows → target table has both; also covers admin-added dropdown/text columns being
+  always-editable in the grid and their save-side validation (option membership, 500-char cap).
 
 ### 2. Manual golden-path check (do this for any UI-touching change)
 
@@ -68,6 +69,16 @@ Then, either by hand in a browser or via `curl` with a cookie jar per role:
    request-only-edits bug (see Invariant #2 in `CLAUDE.md`).
 9. If the change touched ingestion, also exercise the DB-connector path against a scratch
    SQLite table, not just xlsx.
+10. Add a dropdown-type and a text-type custom column ("4. Custom columns"). Confirm both show
+    up immediately in an assigned end user's grid as editable — without touching the exposed-
+    columns checkboxes — and that an out-of-options dropdown value or an over-500-character text
+    value gets rejected with 422.
+11. On the end-user grid, change a cell's value and confirm it saves **without** clicking Save
+    (watch for the inline "Saving…" → "Saved" text next to the cell), then re-query the target
+    table to confirm it actually persisted. Also confirm the manual Save button still works as a
+    fallback.
+12. Type into the search box on both the admin raw table and the end-user grid and confirm rows
+    not matching the search term are hidden (client-side only — no network request should fire).
 
 ### 3. Browser check for template/JS/CSS changes
 

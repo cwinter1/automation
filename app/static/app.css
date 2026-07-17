@@ -3,6 +3,9 @@
   --border: #ccc;
   --flag: #fff3bf;
   --flag-border: #e6a817;
+  --admin-col: #eef4ff;
+  --error: #c0392b;
+  --muted: #6b7280;
 }
 
 body {
@@ -100,6 +103,33 @@ td.flagged {
   border-color: var(--flag-border);
 }
 
+th.admin-col-header,
+td.admin-col-cell {
+  background: var(--admin-col);
+}
+
+.search-box {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 0.75rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.cell-status {
+  display: block;
+  font-size: 0.75em;
+  color: var(--muted);
+  min-height: 1em;
+}
+
+.cell-status-error {
+  color: var(--error);
+}
+
 .login-wrap {
   max-width: 500px;
   margin: 2rem auto;
@@ -113,7 +143,7 @@ td.flagged {
 }
 
 .error {
-  color: #c0392b;
+  color: var(--error);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -121,5 +151,8 @@ td.flagged {
     --border: #444;
     --flag: #4a3c00;
     --flag-border: #d9a300;
+    --admin-col: #1c2a44;
+    --error: #e57373;
+    --muted: #9aa1ac;
   }
 }

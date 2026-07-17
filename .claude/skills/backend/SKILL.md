@@ -70,6 +70,29 @@ inputs up front (every `row_index` exists, `enduser_id` exists if given) before 
 anything, then do the actual mutation as a single `UPDATE ... WHERE row_index IN (...)` rather
 than a loop of individual writes.
 
+### Two kinds of cell editability — don't conflate them
+
+An ingested column's cells are editable **per-cell**: a `CellEditRule` on a specific
+`(row_index, column_def_id)` flags just that one cell, with its own options. An admin-added
+column (`ColumnDef.is_admin_added=True`) is editable **per-column**: every row assigned to an
+end user gets an editable cell in that column automatically, typed by the column's own
+`input_type`/`options` — there's no per-cell rule to create. `apply_enduser_edits`
+(`app/target.py`) checks admin-added columns first (dropdown → value must be in `options`; text
+→ length-capped, any value) and falls back to the `CellEditRule` path otherwise. `get_grid`
+(`app/routers/review.py`) does the same two-branch check when deciding `editable`/`input_type`
+for each cell. If you add a third kind of editability, keep it as an explicit third branch in
+both places — don't try to unify it into `CellEditRule` just because that's how ingested columns
+work.
+
+### Autosave doesn't get a different validation path
+
+The end-user grid saves on every change (see `skills/frontend/SKILL.md`), but that's purely a
+frontend timing decision — every autosave call and every manual Save click hit the identical
+`POST /review/save` → `apply_enduser_edits` → `build_corrected_rows` pipeline. Never add an
+endpoint or code path that writes a `CellEditValue` without going through
+`apply_enduser_edits`'s ownership/validity checks, even for a "just save this one field, it's
+obviously fine" case.
+
 ## Examples
 
 - Adding a new admin-configurable rule type: model it like `CellEditRule` (dataset-scoped,

@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import hash_password, require_admin, require_admin_page
 from app.db import get_db
-from app.ingestion import parse_xlsx, pull_from_db, replace_active_dataset
+from app.ingestion import make_safe_identifier, parse_xlsx, pull_from_db, replace_active_dataset
 from app.models import CellEditRule, ColumnDef, Dataset, EndUser, ExposedColumn, RawRow, TargetTableSetting
 from app.sanitize import validate_identifier
 from app.schemas import (
+    AdminColumnIn,
     AdminDatasetResponse,
     CellRuleIn,
     CellRuleOut,
@@ -103,6 +105,54 @@ def get_dataset(db: Session = Depends(get_db)):
             for r in rows
         ],
     )
+
+
+@api_router.post("/columns", response_model=ColumnOut, status_code=201)
+def create_admin_column(payload: AdminColumnIn, db: Session = Depends(get_db)):
+    dataset = _get_active_dataset(db)
+
+    if payload.input_type not in ("dropdown", "text"):
+        raise HTTPException(status_code=400, detail="input_type must be 'dropdown' or 'text'")
+    if payload.input_type == "dropdown" and (not payload.options or len(payload.options) < 2):
+        raise HTTPException(status_code=400, detail="Dropdown columns need at least 2 options")
+
+    existing_safe_names = {
+        c.safe_name for c in db.query(ColumnDef).filter(ColumnDef.dataset_id == dataset.id).all()
+    }
+    safe_name = make_safe_identifier(payload.name, existing_safe_names)
+    max_order = (
+        db.query(func.max(ColumnDef.order_index)).filter(ColumnDef.dataset_id == dataset.id).scalar()
+    )
+
+    column = ColumnDef(
+        dataset_id=dataset.id,
+        source_name=payload.name,
+        safe_name=safe_name,
+        order_index=(max_order if max_order is not None else -1) + 1,
+        is_admin_added=True,
+        input_type=payload.input_type,
+        options=payload.options if payload.input_type == "dropdown" else None,
+    )
+    db.add(column)
+    db.commit()
+    db.refresh(column)
+    return ColumnOut.model_validate(column, from_attributes=True)
+
+
+@api_router.delete("/columns/{column_def_id}", status_code=204)
+def delete_admin_column(column_def_id: int, db: Session = Depends(get_db)):
+    dataset = _get_active_dataset(db)
+    column = (
+        db.query(ColumnDef)
+        .filter(ColumnDef.dataset_id == dataset.id, ColumnDef.id == column_def_id)
+        .first()
+    )
+    if column is None:
+        raise HTTPException(status_code=404, detail="Column not found")
+    if not column.is_admin_added:
+        raise HTTPException(status_code=400, detail="Only admin-added columns can be deleted")
+    db.delete(column)
+    db.commit()
 
 
 @api_router.get("/exposed-columns", response_model=list[ExposedColumnOut])

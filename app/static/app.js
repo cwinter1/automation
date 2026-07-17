@@ -21,6 +21,29 @@ async function api(method, url, body) {
   return res.json();
 }
 
+function debounce(fn, delayMs) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delayMs);
+  };
+}
+
+/* Wires a <input type=search> to filter a table's <tbody> rows by substring match
+   against the row's visible text. Re-apply after each re-render via applyFilter(). */
+function attachSearchFilter(inputEl, wrapEl) {
+  const applyFilter = () => {
+    const term = inputEl.value.trim().toLowerCase();
+    const rows = wrapEl.querySelectorAll("tbody tr");
+    rows.forEach((tr) => {
+      const text = tr.textContent.toLowerCase();
+      tr.style.display = !term || text.includes(term) ? "" : "none";
+    });
+  };
+  inputEl.addEventListener("input", applyFilter);
+  return applyFilter;
+}
+
 /* ---------------- Admin page ---------------- */
 
 function initAdminPage() {
@@ -38,6 +61,17 @@ function initAdminPage() {
   const targetStatus = document.getElementById("target-status");
   const bulkSelectedCount = document.getElementById("bulk-selected-count");
   const bulkAssignSelect = document.getElementById("bulk-assign-select");
+
+  const rawTableWrap = document.getElementById("raw-table-wrap");
+  const applyRawTableFilter = attachSearchFilter(document.getElementById("raw-table-search"), rawTableWrap);
+
+  const columnTypeSelect = document.getElementById("admin-column-type");
+  const columnOptionsWrap = document.getElementById("admin-column-options-wrap");
+  const toggleColumnOptionsField = () => {
+    columnOptionsWrap.style.display = columnTypeSelect.value === "dropdown" ? "" : "none";
+  };
+  columnTypeSelect.addEventListener("change", toggleColumnOptionsField);
+  toggleColumnOptionsField();
 
   function ruleKey(rowIndex, colId) {
     return `${rowIndex}:${colId}`;
@@ -63,9 +97,34 @@ function initAdminPage() {
     document.getElementById("target-table-name").value = state.targetTable || "";
     state.selectedRows.clear();
     renderEndUsers();
+    renderAdminColumnList();
     renderBulkAssignSelect();
     renderRawTable();
     updateBulkSelectedCount();
+    applyRawTableFilter();
+  }
+
+  function renderAdminColumnList() {
+    const list = document.getElementById("admin-column-list");
+    list.innerHTML = "";
+    for (const col of state.columns.filter((c) => c.is_admin_added)) {
+      const li = document.createElement("li");
+      const typeLabel = col.input_type === "dropdown" ? `dropdown: ${(col.options || []).join(", ")}` : "free text";
+      li.textContent = `${col.source_name} (${typeLabel}) `;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Remove";
+      del.addEventListener("click", async () => {
+        try {
+          await api("DELETE", `/admin/columns/${col.id}`);
+          await refreshAll();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+      li.appendChild(del);
+      list.appendChild(li);
+    }
   }
 
   function renderBulkAssignSelect() {
@@ -126,12 +185,18 @@ function initAdminPage() {
 
     for (const col of state.columns) {
       const th = document.createElement("th");
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = state.exposedIds.has(col.id);
-      checkbox.addEventListener("change", () => onColumnToggle());
-      th.appendChild(checkbox);
-      th.appendChild(document.createTextNode(" " + col.source_name));
+      if (col.is_admin_added) {
+        th.classList.add("admin-col-header");
+        th.textContent = `${col.source_name} (custom)`;
+      } else {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.colId = col.id;
+        checkbox.checked = state.exposedIds.has(col.id);
+        checkbox.addEventListener("change", () => onColumnToggle());
+        th.appendChild(checkbox);
+        th.appendChild(document.createTextNode(" " + col.source_name));
+      }
       headRow.appendChild(th);
     }
     const assignTh = document.createElement("th");
@@ -169,13 +234,18 @@ function initAdminPage() {
         const value = row.values[col.safe_name];
         td.textContent = value === null || value === undefined ? "" : value;
 
-        const exposed = state.exposedIds.has(col.id);
-        const flagged = ruleKey(row.row_index, col.id) in state.cellRules;
-        if (exposed) {
-          td.classList.add("flaggable");
-          if (flagged) td.classList.add("flagged");
-          td.title = "Click to flag/edit correction options";
-          td.addEventListener("click", () => onCellClick(row, col));
+        if (col.is_admin_added) {
+          td.classList.add("admin-col-cell");
+          td.title = "Filled in by end users — always editable, no per-cell flagging needed";
+        } else {
+          const exposed = state.exposedIds.has(col.id);
+          const flagged = ruleKey(row.row_index, col.id) in state.cellRules;
+          if (exposed) {
+            td.classList.add("flaggable");
+            if (flagged) td.classList.add("flagged");
+            td.title = "Click to flag/edit correction options";
+            td.addEventListener("click", () => onCellClick(row, col));
+          }
         }
         tr.appendChild(td);
       }
@@ -209,8 +279,8 @@ function initAdminPage() {
   async function onColumnToggle() {
     const checkboxes = document.querySelectorAll("#raw-table-wrap thead th input[type=checkbox]");
     const selected = [];
-    checkboxes.forEach((cb, idx) => {
-      if (cb.checked) selected.push(state.columns[idx].id);
+    checkboxes.forEach((cb) => {
+      if (cb.checked) selected.push(parseInt(cb.dataset.colId, 10));
     });
     if (selected.length < 4 || selected.length > 6) {
       ingestStatus.textContent = `Select between 4 and 6 columns (currently ${selected.length}).`;
@@ -249,6 +319,25 @@ function initAdminPage() {
       window.alert(err.message);
     }
   }
+
+  document.getElementById("admin-column-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = document.getElementById("admin-column-name").value;
+    const input_type = columnTypeSelect.value;
+    const optionsRaw = document.getElementById("admin-column-options").value;
+    const options =
+      input_type === "dropdown"
+        ? optionsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
+        : null;
+    try {
+      await api("POST", "/admin/columns", { name, input_type, options });
+      document.getElementById("admin-column-form").reset();
+      toggleColumnOptionsField();
+      await refreshAll();
+    } catch (err) {
+      window.alert(err.message);
+    }
+  });
 
   document.getElementById("bulk-assign-btn").addEventListener("click", async () => {
     const rowIndices = Array.from(state.selectedRows);
@@ -327,9 +416,11 @@ function initAdminPage() {
 
 function initReviewPage() {
   let grid = { columns: [], rows: [] };
+  const status = document.getElementById("save-status");
+  const wrap = document.getElementById("grid-wrap");
+  const applyGridFilter = attachSearchFilter(document.getElementById("grid-search"), wrap);
 
   async function loadGrid() {
-    const status = document.getElementById("save-status");
     try {
       grid = await api("GET", "/review/grid");
       status.textContent = "";
@@ -338,10 +429,24 @@ function initReviewPage() {
       grid = { columns: [], rows: [] };
     }
     renderGrid();
+    applyGridFilter();
+  }
+
+  async function saveOneEdit(rowIndex, colId, value, cellStatusEl) {
+    cellStatusEl.textContent = "Saving…";
+    cellStatusEl.classList.remove("cell-status-error");
+    try {
+      await api("POST", "/review/save", {
+        edits: [{ row_index: rowIndex, column_def_id: colId, value }],
+      });
+      cellStatusEl.textContent = "Saved";
+    } catch (err) {
+      cellStatusEl.textContent = err.message;
+      cellStatusEl.classList.add("cell-status-error");
+    }
   }
 
   function renderGrid() {
-    const wrap = document.getElementById("grid-wrap");
     wrap.innerHTML = "";
     if (!grid.rows.length) {
       wrap.textContent = "No rows assigned to you yet.";
@@ -367,17 +472,41 @@ function initReviewPage() {
         const cell = row.cells.find((c) => c.column_def_id === col.column_def_id);
         const td = document.createElement("td");
         if (cell.editable) {
-          const select = document.createElement("select");
-          select.dataset.row = row.row_index;
-          select.dataset.col = col.column_def_id;
-          for (const opt of cell.options) {
-            const optionEl = document.createElement("option");
-            optionEl.value = opt;
-            optionEl.textContent = opt;
-            if (opt === cell.value) optionEl.selected = true;
-            select.appendChild(optionEl);
+          const cellStatusEl = document.createElement("span");
+          cellStatusEl.className = "cell-status";
+
+          if (cell.input_type === "text") {
+            const input = document.createElement("input");
+            input.type = "text";
+            input.value = cell.value === null || cell.value === undefined ? "" : cell.value;
+            input.dataset.row = row.row_index;
+            input.dataset.col = col.column_def_id;
+            const debouncedSave = debounce(
+              () => saveOneEdit(row.row_index, col.column_def_id, input.value, cellStatusEl),
+              500
+            );
+            input.addEventListener("input", () => {
+              cellStatusEl.textContent = "";
+              debouncedSave();
+            });
+            td.appendChild(input);
+          } else {
+            const select = document.createElement("select");
+            for (const opt of cell.options || []) {
+              const optionEl = document.createElement("option");
+              optionEl.value = opt;
+              optionEl.textContent = opt;
+              if (opt === cell.value) optionEl.selected = true;
+              select.appendChild(optionEl);
+            }
+            select.dataset.row = row.row_index;
+            select.dataset.col = col.column_def_id;
+            select.addEventListener("change", () =>
+              saveOneEdit(row.row_index, col.column_def_id, select.value, cellStatusEl)
+            );
+            td.appendChild(select);
           }
-          td.appendChild(select);
+          td.appendChild(cellStatusEl);
         } else {
           td.textContent = cell.value === null || cell.value === undefined ? "" : cell.value;
         }
@@ -390,12 +519,11 @@ function initReviewPage() {
   }
 
   document.getElementById("save-btn").addEventListener("click", async () => {
-    const status = document.getElementById("save-status");
-    const selects = document.querySelectorAll("#grid-wrap select");
-    const edits = Array.from(selects).map((sel) => ({
-      row_index: parseInt(sel.dataset.row, 10),
-      column_def_id: parseInt(sel.dataset.col, 10),
-      value: sel.value,
+    const inputs = document.querySelectorAll("#grid-wrap select, #grid-wrap input[type=text]");
+    const edits = Array.from(inputs).map((el) => ({
+      row_index: parseInt(el.dataset.row, 10),
+      column_def_id: parseInt(el.dataset.col, 10),
+      value: el.value,
     }));
     try {
       const result = await api("POST", "/review/save", { edits });

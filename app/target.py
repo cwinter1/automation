@@ -19,6 +19,9 @@ class NotConfiguredError(Exception):
     pass
 
 
+MAX_FREE_TEXT_LENGTH = 500
+
+
 @dataclass
 class EditRequest:
     row_index: int
@@ -38,11 +41,14 @@ def _load_cell_rules(db: Session, dataset_id: int) -> dict[tuple[int, int], list
 
 
 def apply_enduser_edits(db: Session, dataset: Dataset, enduser_id: int, edits: list[EditRequest]) -> None:
-    """Validate ownership + flagged-cell + option membership, then upsert CellEditValue rows.
+    """Validate ownership + editability + value validity, then upsert CellEditValue rows.
 
-    Raises ValidationError (caller returns 422) if any submitted edit targets a row not
-    assigned to this end user, a cell with no CellEditRule, or a value outside that
-    rule's options — defends against a tampered request body, not just a buggy client.
+    A cell is editable one of two ways: an ingested column with a per-cell CellEditRule
+    (value must be in that rule's options), or an admin-added column (always editable for
+    an assigned row; dropdown-type requires value in the column's options, text-type accepts
+    any string up to MAX_FREE_TEXT_LENGTH). Raises ValidationError (caller returns 422) if any
+    submitted edit targets a row not assigned to this end user or fails these checks —
+    defends against a tampered request body, not just a buggy client.
     """
     if not edits:
         return
@@ -52,6 +58,12 @@ def apply_enduser_edits(db: Session, dataset: Dataset, enduser_id: int, edits: l
         for r in db.query(RawRow).filter(RawRow.dataset_id == dataset.id).all()
     }
     cell_rules = _load_cell_rules(db, dataset.id)
+    admin_columns = {
+        c.id: c
+        for c in db.query(ColumnDef).filter(
+            ColumnDef.dataset_id == dataset.id, ColumnDef.is_admin_added.is_(True)
+        )
+    }
 
     errors = []
     valid_edits = []
@@ -60,6 +72,25 @@ def apply_enduser_edits(db: Session, dataset: Dataset, enduser_id: int, edits: l
         if owner is None or owner != enduser_id:
             errors.append(f"Row {edit.row_index} is not assigned to you")
             continue
+
+        admin_col = admin_columns.get(edit.column_def_id)
+        if admin_col is not None:
+            if admin_col.input_type == "dropdown":
+                if edit.value not in (admin_col.options or []):
+                    errors.append(
+                        f"Value {edit.value!r} is not a valid option for row {edit.row_index}, "
+                        f"column {edit.column_def_id}"
+                    )
+                    continue
+            elif len(edit.value) > MAX_FREE_TEXT_LENGTH:
+                errors.append(
+                    f"Value for row {edit.row_index}, column {edit.column_def_id} exceeds "
+                    f"{MAX_FREE_TEXT_LENGTH} characters"
+                )
+                continue
+            valid_edits.append(edit)
+            continue
+
         options = cell_rules.get((edit.row_index, edit.column_def_id))
         if options is None:
             errors.append(f"Cell (row {edit.row_index}, column {edit.column_def_id}) is not editable")

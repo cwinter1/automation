@@ -22,7 +22,9 @@ pytest   # full test suite
 ## Architecture
 
 - `app/models.py` — SQLAlchemy models: `Dataset`, `ColumnDef`, `RawRow`, `ExposedColumn`,
-  `CellEditRule`, `CellEditValue`, `TargetTableSetting`, `EndUser`.
+  `CellEditRule`, `CellEditValue`, `TargetTableSetting`, `EndUser`. `ColumnDef` doubles as both
+  an ingested source column and an admin-created blank column (`is_admin_added`, `input_type`,
+  `options`) — see Invariant #6.
 - `app/ingestion.py` — xlsx parsing and DB-connector pulling, both converging on
   `(columns, rows)`; `make_safe_identifier` for deriving safe SQL column names;
   `replace_active_dataset` for the single-active-dataset replace semantics.
@@ -61,6 +63,19 @@ pytest   # full test suite
 5. **Single active dataset.** Re-ingesting wipes and replaces everything scoped to the previous
    `Dataset` (cascade). Don't assume multiple datasets coexist — see `project.md` roadmap for
    where that's headed.
+6. **Admin-added columns are always editable and always in the grid, independent of
+   `ExposedColumn`.** A `ColumnDef` with `is_admin_added=True` doesn't go through the 4–6
+   exposed-column selection or a per-cell `CellEditRule` — every row assigned to an end user
+   gets an editable cell in that column automatically (`app/routers/review.py::get_grid`), and
+   `apply_enduser_edits` validates its value against the column's own `input_type`/`options`
+   instead of a `CellEditRule`. Don't collapse these into one mechanism — an ingested column's
+   editability is per-cell and admin-flagged; an admin-added column's is per-column and
+   inherent. Free-text admin columns are capped at `MAX_FREE_TEXT_LENGTH` (`app/target.py`).
+7. **Autosave and manual Save go through the exact same `POST /review/save` endpoint and the
+   exact same validation.** The end-user grid fires a save on every cell change (debounced for
+   free-text inputs) rather than batching until a button click — this is a frontend-only
+   behavior change (`app/static/app.js`), not a relaxed backend contract. Don't add a separate
+   "fast path" for autosave that skips `apply_enduser_edits`.
 
 ## Model selection
 
