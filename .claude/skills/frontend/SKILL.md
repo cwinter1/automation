@@ -1,6 +1,6 @@
 ---
 name: frontend
-description: Conventions for this POC's frontend (Jinja2 templates + vanilla JS/CSS, no build step) and the pending design direction — default to the maya-math repo's conventions until the user's screenshots land.
+description: Conventions for this POC's frontend (Jinja2 templates + vanilla JS/CSS, no build step) and the token-based design system in app.css — a brand-neutral placeholder pending maya-math repo access or the user's screenshots.
 origin: project
 ---
 
@@ -29,9 +29,10 @@ easier. The pattern is:
   A single `api(method, url, body)` helper wraps `fetch`, handles JSON vs. `FormData` bodies,
   and throws with a readable message on non-2xx — every new call should go through it rather
   than a fresh `fetch()`.
-- `app/static/app.css` — CSS custom properties (`--border`, `--flag`, `--flag-border`) defined
-  in `:root` and overridden under `@media (prefers-color-scheme: dark)`. Follow this pattern for
-  any new color — don't hardcode hex values in rules.
+- `app/static/app.css` — a token-based design system: color/spacing/radius/shadow custom
+  properties defined in `:root`, overridden under `@media (prefers-color-scheme: dark)`. See
+  "Design system" below. Follow this pattern for any new color or spacing value — don't
+  hardcode hex values or magic pixel numbers in rules; add or reuse a token instead.
 
 ### Adding a new admin control (pattern to follow)
 
@@ -95,29 +96,38 @@ nothing per-cell to configure. Don't add a click-to-flag interaction to custom-c
 the admin needs to change a custom column's type/options, that's a delete-and-recreate today
 (see the `.claude/skills/backend/SKILL.md` note on the two kinds of editability).
 
-### Design direction (pending)
+### Design system (placeholder, pending maya-math/screenshots)
 
-The current UI has no real design system — it's functional, not styled to a brand. The intended
-direction, per the project owner:
+`app/static/app.css` opens with a documented token block: color (`--color-bg`,
+`--color-surface`, `--color-border(-strong)`, `--color-text(-muted)`, `--color-primary(-hover)`,
+`--color-danger(-bg)`, `--color-success`, `--color-warning-bg/border`, `--color-accent-bg/border`),
+spacing (`--space-1` … `--space-6`), radius (`--radius-sm/md/lg`), shadow (`--shadow-sm/md`), and
+`--font-sans`. Every component rule below it (panels, buttons, inputs, tables, the login cards,
+`.dataset-section`, flagged/admin-column highlighting) is built from these tokens, not hardcoded
+values — that's deliberate: swapping in the real design later should mean editing the `:root` /
+dark-mode token values, not rewriting component rules.
+
+This is explicitly a **brand-neutral placeholder**, not the final design. Per the project owner:
 
 - **Default reference: the `maya-math` repo's conventions** (colors, layout, component
-  patterns) — pull this in once that repo is accessible in-session (`add_repo` was gated behind
-  an infra approval step as of this writing; retry it, don't assume it's permanently
-  unavailable).
-- **Overriding source of truth: user-provided screenshots**, to be uploaded later. When those
-  arrive, they take priority over any inference from `maya-math` — update this section (and the
-  actual CSS) to match them, and note here what changed and why so future sessions don't revert
-  to the `maya-math`-only interpretation.
+  patterns) — pull this in once that repo is accessible in-session (`add_repo`/`list_repos` have
+  hit a persistent infra approval gate all session as of this writing; it did not clear on
+  repeated retries across several hours, so don't assume one more retry will do it — but don't
+  assume it's permanent either, it may just need a fresh session or explicit connector
+  approval).
+- **Overriding source of truth: user-provided screenshots**, to be uploaded later. When either
+  lands, update the token values (and only the token values, where possible) to match, and note
+  here what changed so future sessions don't revert to this placeholder's interpretation.
 
-Until either lands, don't invest in a full visual redesign — keep changes functional and
-minimal, consistent with the "no build step" constraint above, so the eventual redesign isn't
-fighting scaffolding that will be thrown away.
+Don't restyle component-by-component when that day comes — retheme via the tokens first, and
+only touch individual component rules if the real design genuinely needs a different shape
+(e.g. a different button style), not just different colors.
 
 ## Examples
 
 - Adding a delete-confirmation dialog for end users: reuse `window.confirm()` (see the pattern
   in `onCellClick`'s `window.prompt()` usage) rather than building a custom modal component —
   matches the project's "plain until told otherwise" design posture.
-- Restyling the login page once `maya-math`/screenshots are available: touch only `app.css`
-  custom properties and `login.html` markup; the `app.js` login-page logic (form submit
-  handlers) shouldn't need to change for a visual-only update.
+- Restyling once `maya-math`/screenshots are available: start by changing the token values in
+  `:root` and the dark-mode block; the `app.js` logic (form submit handlers, rendering) shouldn't
+  need to change for a visual-only update.

@@ -110,12 +110,13 @@ Two design decisions worth restating here:
 These are explicitly out of scope for the current POC but the schema/architecture was kept
 flexible enough to add them without a rewrite:
 
-- **Frontend redesign.** The current UI is intentionally plain (no design system, no build
-  step) — it exists to prove the workflow, not to be the final look. The design direction for
-  the real frontend is meant to follow the **`maya-math`** repo's conventions as the default
-  reference. The user will also upload concrete screenshots of the target look later — once
-  those land, treat them as the source of truth over any inference from `maya-math`, and update
-  `.claude/skills/frontend/SKILL.md` accordingly.
+- **Real design direction.** `app/static/app.css` now has a full token-based design system
+  (color, spacing, radius, shadow custom properties) with a clean, modern, accessible look in
+  both light and dark — but it's a **brand-neutral placeholder**, not the final design. The
+  intended direction is to follow the **`maya-math`** repo's actual conventions (blocked all
+  session by a persistent infra approval gate on `add_repo`/`list_repos` — retry in a fresh
+  session) or the user's own screenshots, whichever lands first; either should mostly be a token
+  swap given how the CSS is structured. See `.claude/skills/frontend/SKILL.md`.
 
 ## Where things live
 
