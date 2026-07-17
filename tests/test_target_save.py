@@ -149,6 +149,28 @@ def test_cross_enduser_saves_accumulate_without_clobbering(db_session):
     assert rows_after_b[2][0] == "Carl"
 
 
+def test_ship_handles_source_column_named_id(db_session):
+    dataset = Dataset(source_type="xlsx", label="Id collision dataset")
+    db_session.add(dataset)
+    db_session.flush()
+
+    col_id = ColumnDef(dataset_id=dataset.id, source_name="ID", safe_name="id", order_index=0)
+    col_name = ColumnDef(dataset_id=dataset.id, source_name="Name", safe_name="name", order_index=1)
+    db_session.add_all([col_id, col_name])
+    db_session.flush()
+
+    db_session.add(RawRow(dataset_id=dataset.id, row_index=0, data={"id": "SRC-1", "name": "Alice"}))
+    db_session.add(TargetTableSetting(dataset_id=dataset.id, table_name="corrected_id_collision"))
+    db_session.commit()
+
+    result = ship_dataset_to_db(db_session, dataset)
+    assert result.row_count == 1
+
+    with engine.connect() as conn:
+        rows = conn.execute(text('SELECT id, name FROM "corrected_id_collision"')).fetchall()
+    assert rows == [("SRC-1", "Alice")]
+
+
 def _sqlite_master_names():
     with engine.connect() as conn:
         result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))

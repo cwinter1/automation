@@ -160,14 +160,27 @@ def build_corrected_rows(db: Session, dataset: Dataset) -> tuple[list[ColumnDef]
     return columns, corrected
 
 
+def _surrogate_pk_name(columns: list[ColumnDef]) -> str:
+    """A synthetic primary-key column name guaranteed not to collide with any
+    ColumnDef.safe_name (e.g. a source column literally named "id")."""
+    taken = {c.safe_name for c in columns}
+    candidate = "id"
+    suffix = 2
+    while candidate in taken:
+        candidate = f"id_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def create_or_replace_target_table(conn: Connection, table_name: str, columns: list[ColumnDef]) -> None:
     validate_identifier(table_name)
     for col in columns:
         validate_identifier(col.safe_name)
 
+    pk_name = _surrogate_pk_name(columns)
     col_sql = ", ".join(f'"{c.safe_name}" TEXT' for c in columns)
     conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
-    conn.execute(text(f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY AUTOINCREMENT, {col_sql})'))
+    conn.execute(text(f'CREATE TABLE "{table_name}" ("{pk_name}" INTEGER PRIMARY KEY AUTOINCREMENT, {col_sql})'))
 
 
 def insert_corrected_rows(conn: Connection, table_name: str, columns: list[ColumnDef], rows: list[dict]) -> int:

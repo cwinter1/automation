@@ -21,6 +21,11 @@ async function api(method, url, body) {
   return res.json();
 }
 
+function setStatus(el, message, isError) {
+  el.textContent = message;
+  el.classList.toggle("error", !!isError);
+}
+
 function debounce(fn, delayMs) {
   let timer = null;
   return (...args) => {
@@ -387,15 +392,15 @@ function initAdminPage() {
       if (cb.checked) selected.push(parseInt(cb.dataset.colId, 10));
     });
     if (selected.length < 4 || selected.length > 6) {
-      ingestStatus.textContent = `Select between 4 and 6 columns (currently ${selected.length}).`;
+      setStatus(ingestStatus, `Select between 4 and 6 columns (currently ${selected.length}).`, true);
       return;
     }
     try {
       await api("PUT", `/admin/datasets/${state.currentDatasetId}/exposed-columns`, { column_def_ids: selected });
-      ingestStatus.textContent = "Exposed columns updated.";
+      setStatus(ingestStatus, "Exposed columns updated.", false);
       await refreshCurrentDataset();
     } catch (err) {
-      ingestStatus.textContent = err.message;
+      setStatus(ingestStatus, err.message, true);
     }
   }
 
@@ -465,7 +470,7 @@ function initAdminPage() {
     if (!state.currentDatasetId) return;
     const rowIndices = Array.from(state.selectedRows);
     if (rowIndices.length === 0) {
-      ingestStatus.textContent = "Select at least one row to share.";
+      setStatus(ingestStatus, "Select at least one row to share.", true);
       return;
     }
     const enduser_id = bulkAssignSelect.value ? parseInt(bulkAssignSelect.value, 10) : null;
@@ -474,10 +479,10 @@ function initAdminPage() {
         row_indices: rowIndices,
         enduser_id,
       });
-      ingestStatus.textContent = `Shared ${result.updated} row(s).`;
+      setStatus(ingestStatus, `Shared ${result.updated} row(s).`, false);
       await refreshCurrentDataset();
     } catch (err) {
-      ingestStatus.textContent = err.message;
+      setStatus(ingestStatus, err.message, true);
     }
   });
 
@@ -489,15 +494,15 @@ function initAdminPage() {
     const form = new FormData();
     form.append("file", file);
     const url = "/admin/ingest/xlsx" + (label ? `?label=${encodeURIComponent(label)}` : "");
-    ingestStatus.textContent = "Ingesting...";
+    setStatus(ingestStatus, "Ingesting...", false);
     try {
       const result = await api("POST", url, form);
-      ingestStatus.textContent = `Ingested "${result.label}": ${result.row_count} rows, ${result.columns.length} columns.`;
+      setStatus(ingestStatus, `Ingested "${result.label}": ${result.row_count} rows, ${result.columns.length} columns.`, false);
       state.currentDatasetId = result.dataset_id;
       document.getElementById("xlsx-form").reset();
       await refreshAll();
     } catch (err) {
-      ingestStatus.textContent = err.message;
+      setStatus(ingestStatus, err.message, true);
     }
   });
 
@@ -508,15 +513,15 @@ function initAdminPage() {
     const connection = connSelect || connRaw;
     const table_name = document.getElementById("db-table").value;
     const label = document.getElementById("db-label").value || null;
-    ingestStatus.textContent = "Ingesting...";
+    setStatus(ingestStatus, "Ingesting...", false);
     try {
       const result = await api("POST", "/admin/ingest/db", { connection, table_name, label });
-      ingestStatus.textContent = `Ingested "${result.label}": ${result.row_count} rows, ${result.columns.length} columns.`;
+      setStatus(ingestStatus, `Ingested "${result.label}": ${result.row_count} rows, ${result.columns.length} columns.`, false);
       state.currentDatasetId = result.dataset_id;
       document.getElementById("db-form").reset();
       await refreshAll();
     } catch (err) {
-      ingestStatus.textContent = err.message;
+      setStatus(ingestStatus, err.message, true);
     }
   });
 
@@ -557,10 +562,10 @@ function initAdminPage() {
     const table_name = document.getElementById("target-table-name").value;
     try {
       await api("PUT", `/admin/datasets/${state.currentDatasetId}/target-table`, { table_name });
-      targetStatus.textContent = "Target table saved.";
+      setStatus(targetStatus, "Target table saved.", false);
       await refreshDatasetList();
     } catch (err) {
-      targetStatus.textContent = err.message;
+      setStatus(targetStatus, err.message, true);
     }
   });
 
@@ -568,9 +573,9 @@ function initAdminPage() {
     if (!state.currentDatasetId) return;
     try {
       const result = await api("POST", `/admin/datasets/${state.currentDatasetId}/ship`, {});
-      targetStatus.textContent = `Shipped ${result.row_count} rows to "${result.table_name}".`;
+      setStatus(targetStatus, `Shipped ${result.row_count} rows to "${result.table_name}".`, false);
     } catch (err) {
-      targetStatus.textContent = err.message;
+      setStatus(targetStatus, err.message, true);
     }
   });
 
@@ -603,9 +608,9 @@ function initReviewPage() {
     try {
       const grid = await api("GET", "/review/grid");
       datasets = grid.datasets;
-      pageStatus.textContent = "";
+      setStatus(pageStatus, "", false);
     } catch (err) {
-      pageStatus.textContent = err.message;
+      setStatus(pageStatus, err.message, true);
       datasets = [];
     }
     renderAll();
@@ -614,13 +619,14 @@ function initReviewPage() {
 
   async function saveOneEdit(datasetId, rowIndex, colId, value, cellStatusEl) {
     cellStatusEl.textContent = "Saving…";
-    cellStatusEl.classList.remove("cell-status-error");
+    cellStatusEl.classList.remove("cell-status-error", "cell-status-success");
     try {
       await api("POST", "/review/save", {
         dataset_id: datasetId,
         edits: [{ row_index: rowIndex, column_def_id: colId, value }],
       });
       cellStatusEl.textContent = "Saved";
+      cellStatusEl.classList.add("cell-status-success");
     } catch (err) {
       cellStatusEl.textContent = err.message;
       cellStatusEl.classList.add("cell-status-error");
@@ -628,12 +634,12 @@ function initReviewPage() {
   }
 
   async function shipDataset(datasetId, shipStatusEl) {
-    shipStatusEl.textContent = "Shipping…";
+    setStatus(shipStatusEl, "Shipping…", false);
     try {
       const result = await api("POST", `/review/datasets/${datasetId}/ship`, {});
-      shipStatusEl.textContent = `Shipped ${result.row_count} rows to "${result.table_name}".`;
+      setStatus(shipStatusEl, `Shipped ${result.row_count} rows to "${result.table_name}".`, false);
     } catch (err) {
-      shipStatusEl.textContent = err.message;
+      setStatus(shipStatusEl, err.message, true);
     }
   }
 
