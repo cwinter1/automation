@@ -20,24 +20,37 @@ class AdminColumnIn(BaseModel):
 
 
 class IngestDbRequest(BaseModel):
-    connection_string: str
+    connection: str  # a DB_CONN_<NAME> connection name, or a raw connection string
     table_name: str
+    label: str | None = None
 
 
 class IngestResponse(BaseModel):
     dataset_id: int
+    label: str
     columns: list[ColumnOut]
     row_count: int
+
+
+class DatasetOut(BaseModel):
+    id: int
+    label: str
+    source_type: str
+    row_count: int
+    column_count: int
+    target_table_name: str | None = None
 
 
 class RawRowOut(BaseModel):
     row_index: int
     values: dict[str, Any]
     assigned_enduser_id: int | None
+    is_admin_added: bool = False
 
 
 class AdminDatasetResponse(BaseModel):
     dataset_id: int
+    label: str
     columns: list[ColumnOut]
     rows: list[RawRowOut]
 
@@ -80,6 +93,16 @@ class EndUserOut(BaseModel):
     username: str
 
 
+class AdminUserIn(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1)
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    username: str
+
+
 class RowAssignIn(BaseModel):
     enduser_id: int | None = None
 
@@ -100,10 +123,15 @@ class EditIn(BaseModel):
 
 
 class SaveRequest(BaseModel):
+    dataset_id: int
     edits: list[EditIn] = Field(default_factory=list)
 
 
-class SaveResponse(BaseModel):
+class SaveEditsResponse(BaseModel):
+    saved: int
+
+
+class ShipResponse(BaseModel):
     table_name: str
     row_count: int
 
@@ -131,6 +159,33 @@ class GridColumn(BaseModel):
     order: int
 
 
-class GridResponse(BaseModel):
+class DatasetGrid(BaseModel):
+    dataset_id: int
+    label: str
+    target_table_name: str | None = None
     columns: list[GridColumn]
     rows: list[GridRow]
+
+
+class GridResponse(BaseModel):
+    datasets: list[DatasetGrid]
+
+
+class ConnectionNamesOut(BaseModel):
+    names: list[str]
+
+
+class MetadataColumn(BaseModel):
+    source_name: str
+    safe_name: str
+    is_admin_added: bool
+
+
+class DatasetMetadataOut(BaseModel):
+    dataset_id: int
+    label: str
+    source_type: str
+    row_count: int
+    input_columns: list[MetadataColumn]
+    target_table_name: str | None
+    output_columns: list[MetadataColumn]

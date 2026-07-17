@@ -4,12 +4,12 @@
 <div class="review-wrap">
   <h2>Your rows</h2>
   <p class="hint">
-    Locked cells are read-only. Editable cells save automatically as you change them — the
-    Save button is there for a manual confirmation, not required.
+    Locked cells are read-only. Editable cells save automatically as you change them — that
+    just keeps your work from being lost. Nothing reaches the database until you click
+    "Ship to DB" for that dataset.
   </p>
   <input type="search" id="grid-search" class="search-box" placeholder="Search your rows…">
+  <p id="page-status" class="status"></p>
   <div id="grid-wrap"></div>
-  <button id="save-btn" type="button">Save</button>
-  <p id="save-status" class="status"></p>
 </div>
 {% endblock %}

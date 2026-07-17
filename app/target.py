@@ -182,11 +182,13 @@ def insert_corrected_rows(conn: Connection, table_name: str, columns: list[Colum
     return len(rows)
 
 
-def save_corrected_dataset(
-    db: Session, dataset: Dataset, enduser_id: int, edits: list[EditRequest]
-) -> SaveResult:
-    apply_enduser_edits(db, dataset, enduser_id, edits)
-
+def ship_dataset_to_db(db: Session, dataset: Dataset) -> SaveResult:
+    """Publish the dataset's current state (raw data + every persisted CellEditValue,
+    across all end users) into its target table. This is the explicit "Ship to DB" action —
+    distinct from apply_enduser_edits, which just persists an edit so it isn't lost. Autosave
+    calls apply_enduser_edits only; this function is only called when an end user or admin
+    explicitly ships the dataset.
+    """
     setting = (
         db.query(TargetTableSetting)
         .filter(TargetTableSetting.dataset_id == dataset.id)

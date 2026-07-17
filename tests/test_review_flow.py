@@ -6,7 +6,7 @@ from app.main import app
 from tests.conftest import make_xlsx_bytes
 
 
-def _ingest_sample(admin_client):
+def _ingest_sample(admin_client, label=None):
     headers = ["Name", "Status", "City", "Amount", "Note"]
     rows = [
         ["Alise", "ok", "NYC", 10, "row0-alice-needs-name-fix"],
@@ -15,27 +15,30 @@ def _ingest_sample(admin_client):
         ["Dana", "ok", "DC", 13, "row3-unassigned"],
     ]
     content = make_xlsx_bytes(headers, rows)
+    url = "/admin/ingest/xlsx" + (f"?label={label}" if label else "")
     resp = admin_client.post(
-        "/admin/ingest/xlsx",
+        url,
         files={"file": ("data.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     assert resp.status_code == 200, resp.text
-    return {c["source_name"]: c["id"] for c in resp.json()["columns"]}
+    body = resp.json()
+    col_ids = {c["source_name"]: c["id"] for c in body["columns"]}
+    return body["dataset_id"], col_ids
 
 
-def _setup_dataset():
+def _setup_dataset(target_table="corrected_flow", label=None):
     admin_client = TestClient(app)
-    admin_client.post("/login", data={"role": "admin", "password": "test-admin-pw"})
+    admin_client.post("/login", data={"role": "master_admin", "password": "test-admin-pw"})
 
-    col_ids = _ingest_sample(admin_client)
+    ds_id, col_ids = _ingest_sample(admin_client, label=label)
 
     resp = admin_client.put(
-        "/admin/exposed-columns",
+        f"/admin/datasets/{ds_id}/exposed-columns",
         json={"column_def_ids": [col_ids["Name"], col_ids["Status"], col_ids["City"], col_ids["Amount"]]},
     )
     assert resp.status_code == 204
 
-    resp = admin_client.put("/admin/target-table", json={"table_name": "corrected_flow"})
+    resp = admin_client.put(f"/admin/datasets/{ds_id}/target-table", json={"table_name": target_table})
     assert resp.status_code == 204
 
     alice_resp = admin_client.post("/admin/endusers", json={"username": "alice", "password": "pw-alice"})
@@ -44,38 +47,41 @@ def _setup_dataset():
     bob_id = bob_resp.json()["id"]
 
     for row_index, enduser_id in [(0, alice_id), (1, alice_id), (2, bob_id)]:
-        r = admin_client.put(f"/admin/rows/{row_index}/assign", json={"enduser_id": enduser_id})
+        r = admin_client.put(f"/admin/datasets/{ds_id}/rows/{row_index}/assign", json={"enduser_id": enduser_id})
         assert r.status_code == 204
     # row_index 3 is left unassigned deliberately.
 
     r = admin_client.put(
-        f"/admin/cell-rules/0/{col_ids['Name']}", json={"options": ["Alice", "Alicia"]}
+        f"/admin/datasets/{ds_id}/cell-rules/0/{col_ids['Name']}", json={"options": ["Alice", "Alicia"]}
     )
     assert r.status_code == 204
     r = admin_client.put(
-        f"/admin/cell-rules/2/{col_ids['Status']}", json={"options": ["active", "inactive"]}
+        f"/admin/datasets/{ds_id}/cell-rules/2/{col_ids['Status']}", json={"options": ["active", "inactive"]}
     )
     assert r.status_code == 204
 
-    return col_ids
+    return ds_id, col_ids
 
 
-def _target_table_rows():
+def _target_table_rows(table_name="corrected_flow"):
     with engine.connect() as conn:
-        return conn.execute(text('SELECT name, status, note FROM "corrected_flow" ORDER BY id')).fetchall()
+        return conn.execute(text(f'SELECT name, status, note FROM "{table_name}" ORDER BY id')).fetchall()
 
 
-def test_full_review_and_save_flow():
-    col_ids = _setup_dataset()
+def test_full_review_save_ship_flow():
+    ds_id, col_ids = _setup_dataset()
 
     alice_client = TestClient(app)
     alice_client.post("/login", data={"role": "enduser", "username": "alice", "password": "pw-alice"})
 
     grid = alice_client.get("/review/grid").json()
-    row_indices = {row["row_index"] for row in grid["rows"]}
+    assert len(grid["datasets"]) == 1
+    ds_grid = grid["datasets"][0]
+    assert ds_grid["dataset_id"] == ds_id
+    row_indices = {row["row_index"] for row in ds_grid["rows"]}
     assert row_indices == {0, 1}  # only alice's rows, never bob's or the unassigned row
 
-    row0 = next(r for r in grid["rows"] if r["row_index"] == 0)
+    row0 = next(r for r in ds_grid["rows"] if r["row_index"] == 0)
     name_cell = next(c for c in row0["cells"] if c["column_def_id"] == col_ids["Name"])
     assert name_cell["editable"] is True
     assert set(name_cell["options"]) == {"Alice", "Alicia"}
@@ -83,12 +89,24 @@ def test_full_review_and_save_flow():
     city_cell = next(c for c in row0["cells"] if c["column_def_id"] == col_ids["City"])
     assert city_cell["editable"] is False
 
+    # Autosave (POST /review/save) only persists — it must not touch the target table yet.
     save_resp = alice_client.post(
         "/review/save",
-        json={"edits": [{"row_index": 0, "column_def_id": col_ids["Name"], "value": "Alice"}]},
+        json={"dataset_id": ds_id, "edits": [{"row_index": 0, "column_def_id": col_ids["Name"], "value": "Alice"}]},
     )
     assert save_resp.status_code == 200, save_resp.text
-    body = save_resp.json()
+    assert save_resp.json() == {"saved": 1}
+
+    with engine.connect() as conn:
+        tables = {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        }
+    assert "corrected_flow" not in tables  # not shipped yet
+
+    # Now alice explicitly ships.
+    ship_resp = alice_client.post(f"/review/datasets/{ds_id}/ship")
+    assert ship_resp.status_code == 200, ship_resp.text
+    body = ship_resp.json()
     assert body["table_name"] == "corrected_flow"
     assert body["row_count"] == 4  # full dataset, not just alice's rows
 
@@ -99,7 +117,7 @@ def test_full_review_and_save_flow():
     # Tamper attempt: alice tries to edit bob's row.
     tamper_resp = alice_client.post(
         "/review/save",
-        json={"edits": [{"row_index": 2, "column_def_id": col_ids["Status"], "value": "active"}]},
+        json={"dataset_id": ds_id, "edits": [{"row_index": 2, "column_def_id": col_ids["Status"], "value": "active"}]},
     )
     assert tamper_resp.status_code == 422
     rows_after_tamper = _target_table_rows()
@@ -109,13 +127,18 @@ def test_full_review_and_save_flow():
     bob_client.post("/login", data={"role": "enduser", "username": "bob", "password": "pw-bob"})
 
     bob_grid = bob_client.get("/review/grid").json()
-    assert {row["row_index"] for row in bob_grid["rows"]} == {2}
+    assert len(bob_grid["datasets"]) == 1
+    assert {row["row_index"] for row in bob_grid["datasets"][0]["rows"]} == {2}
 
     bob_save = bob_client.post(
         "/review/save",
-        json={"edits": [{"row_index": 2, "column_def_id": col_ids["Status"], "value": "active"}]},
+        json={"dataset_id": ds_id, "edits": [{"row_index": 2, "column_def_id": col_ids["Status"], "value": "active"}]},
     )
     assert bob_save.status_code == 200, bob_save.text
+
+    # Bob's own ship publishes his change plus alice's earlier one — accumulation across users.
+    bob_ship = bob_client.post(f"/review/datasets/{ds_id}/ship")
+    assert bob_ship.status_code == 200, bob_ship.text
 
     rows_after_bob = _target_table_rows()
     assert rows_after_bob[0][0] == "Alice"   # alice's earlier save was not clobbered
@@ -123,24 +146,68 @@ def test_full_review_and_save_flow():
     assert rows_after_bob[3][0] == "Dana"    # unassigned row carried through untouched
 
 
-def test_admin_added_columns_are_editable_and_save():
-    _setup_dataset()
+def test_ship_rejected_for_enduser_with_no_rows_in_dataset():
+    ds_id, col_ids = _setup_dataset(target_table="corrected_noaccess")
 
     admin_client = TestClient(app)
-    admin_client.post("/login", data={"role": "admin", "password": "test-admin-pw"})
+    admin_client.post("/login", data={"role": "master_admin", "password": "test-admin-pw"})
+    outsider_resp = admin_client.post("/admin/endusers", json={"username": "eve", "password": "pw-eve"})
+    assert outsider_resp.status_code == 201
+
+    eve_client = TestClient(app)
+    eve_client.post("/login", data={"role": "enduser", "username": "eve", "password": "pw-eve"})
+
+    grid = eve_client.get("/review/grid").json()
+    assert grid["datasets"] == []  # eve has no rows in any dataset
+
+    resp = eve_client.post(f"/review/datasets/{ds_id}/ship")
+    assert resp.status_code == 403
+
+
+def test_end_user_grid_spans_multiple_datasets():
+    ds1_id, col_ids_1 = _setup_dataset(target_table="corrected_multi_1", label="Dataset One")
+
+    admin_client = TestClient(app)
+    admin_client.post("/login", data={"role": "master_admin", "password": "test-admin-pw"})
+    ds2_id, col_ids_2 = _ingest_sample(admin_client, label="Dataset Two")
+    admin_client.put(
+        f"/admin/datasets/{ds2_id}/exposed-columns",
+        json={"column_def_ids": [col_ids_2["Name"], col_ids_2["Status"], col_ids_2["City"], col_ids_2["Amount"]]},
+    )
+    admin_client.put(f"/admin/datasets/{ds2_id}/target-table", json={"table_name": "corrected_multi_2"})
+    # Reuse alice from dataset one's setup, assign her a row in dataset two as well.
+    endusers = admin_client.get("/admin/endusers").json()
+    alice_id = next(u["id"] for u in endusers if u["username"] == "alice")
+    admin_client.put(f"/admin/datasets/{ds2_id}/rows/0/assign", json={"enduser_id": alice_id})
+
+    alice_client = TestClient(app)
+    alice_client.post("/login", data={"role": "enduser", "username": "alice", "password": "pw-alice"})
+
+    grid = alice_client.get("/review/grid").json()
+    dataset_ids = {d["dataset_id"] for d in grid["datasets"]}
+    assert dataset_ids == {ds1_id, ds2_id}
+
+
+def test_admin_added_columns_are_editable_and_save():
+    ds_id, col_ids = _setup_dataset()
+
+    admin_client = TestClient(app)
+    admin_client.post("/login", data={"role": "master_admin", "password": "test-admin-pw"})
 
     dropdown_col = admin_client.post(
-        "/admin/columns", json={"name": "Priority", "input_type": "dropdown", "options": ["High", "Low"]}
+        f"/admin/datasets/{ds_id}/columns",
+        json={"name": "Priority", "input_type": "dropdown", "options": ["High", "Low"]},
     ).json()
     text_col = admin_client.post(
-        "/admin/columns", json={"name": "Comments", "input_type": "text", "options": None}
+        f"/admin/datasets/{ds_id}/columns", json={"name": "Comments", "input_type": "text", "options": None}
     ).json()
 
     alice_client = TestClient(app)
     alice_client.post("/login", data={"role": "enduser", "username": "alice", "password": "pw-alice"})
 
     grid = alice_client.get("/review/grid").json()
-    row0 = next(r for r in grid["rows"] if r["row_index"] == 0)
+    ds_grid = grid["datasets"][0]
+    row0 = next(r for r in ds_grid["rows"] if r["row_index"] == 0)
 
     priority_cell = next(c for c in row0["cells"] if c["column_def_id"] == dropdown_col["id"])
     assert priority_cell["editable"] is True
@@ -155,20 +222,24 @@ def test_admin_added_columns_are_editable_and_save():
     # Dropdown value outside the admin-defined options is rejected.
     bad_resp = alice_client.post(
         "/review/save",
-        json={"edits": [{"row_index": 0, "column_def_id": dropdown_col["id"], "value": "Medium"}]},
+        json={"dataset_id": ds_id, "edits": [{"row_index": 0, "column_def_id": dropdown_col["id"], "value": "Medium"}]},
     )
     assert bad_resp.status_code == 422
 
     ok_resp = alice_client.post(
         "/review/save",
         json={
+            "dataset_id": ds_id,
             "edits": [
                 {"row_index": 0, "column_def_id": dropdown_col["id"], "value": "High"},
                 {"row_index": 0, "column_def_id": text_col["id"], "value": "looks fine to me"},
-            ]
+            ],
         },
     )
     assert ok_resp.status_code == 200, ok_resp.text
+
+    ship_resp = alice_client.post(f"/review/datasets/{ds_id}/ship")
+    assert ship_resp.status_code == 200, ship_resp.text
 
     with engine.connect() as conn:
         row = conn.execute(
@@ -183,6 +254,6 @@ def test_admin_added_columns_are_editable_and_save():
     # Free text past the length cap is rejected.
     too_long_resp = alice_client.post(
         "/review/save",
-        json={"edits": [{"row_index": 0, "column_def_id": text_col["id"], "value": "x" * 501}]},
+        json={"dataset_id": ds_id, "edits": [{"row_index": 0, "column_def_id": text_col["id"], "value": "x" * 501}]},
     )
     assert too_long_resp.status_code == 422

@@ -6,78 +6,110 @@ A proof-of-concept web app for a data-correction workflow, built to demonstrate 
 before it's hardened into a real product:
 
 1. **Ingest** — an admin brings in source data, either by uploading an `.xlsx` file or by
-   pointing at a table in an external database via a connection string.
-2. **Configure rules** — the admin reviews the raw data, decides which 4–6 columns end users
-   are allowed to see, flags the specific cells that need a human correction (each with its own
-   dropdown of valid replacement values), and decides who is responsible for which rows.
-3. **Correct** — end users log in and see only the rows given to them. Anything not flagged is
-   locked/read-only; flagged cells are dropdowns, not free text, so corrections can't introduce
-   new mistakes. Saving writes a full corrected copy of the dataset into an admin-named target
-   table.
+   pulling a table from an external database (via a named connection or a raw connection
+   string). Every ingest creates a new, independent dataset — nothing is replaced or wiped, so
+   the admin can bring in dataset after dataset over time, each with its own rules and end
+   users, without losing earlier ones.
+2. **Configure rules** — per dataset, the admin reviews the raw data, decides which 4–6 columns
+   end users are allowed to see, flags the specific cells that need a human correction (each
+   with its own dropdown of valid replacement values), can add wholly new blank columns or rows
+   for end users to fill in, and decides who is responsible for which rows.
+3. **Correct** — end users log in and see every row assigned to them, across every dataset
+   they've been given rows in. Anything not flagged/admin-added is locked/read-only; editable
+   cells are dropdowns or free text, never arbitrary edits to a locked field. Changes autosave
+   immediately so nothing is lost, but nothing reaches the database until the corresponding
+   dataset is explicitly **shipped** — by the end user or by the admin.
 
 ## Roles
 
-- **Admin** — one shared password (`ADMIN_PASSWORD`). Ingests data, defines exposed columns,
-  flags cells, creates end-user accounts, assigns/shares rows, names the target table.
-- **End user** — individual username + password, created by the admin. Sees and corrects only
-  the rows assigned to them; never sees another end user's rows.
+Three tiers:
+
+- **Master admin** — the single shared `ADMIN_PASSWORD`, no account of its own. Has full admin
+  access (everything below) *plus* the exclusive ability to create/remove named admin accounts.
+- **Admin** — individual username + password, created by the master admin. Full admin access:
+  ingests data (each ingest a new dataset), defines exposed columns/custom columns/rows per
+  dataset, flags cells, creates end-user accounts, assigns/shares rows, names each dataset's
+  target table, can ship any dataset. Cannot manage other admin accounts — that's the one thing
+  reserved for the master admin.
+- **End user** — individual username + password, created by an admin. Sees and corrects only
+  the rows assigned to them, across whichever dataset(s) they have rows in; never sees another
+  end user's rows (confirmed permanent — a row has exactly one assigned end user, not many). Can
+  ship a dataset only if they have at least one row assigned in it.
 
 ## Current status
 
-The POC is functionally complete and tested (pytest suite + manual browser verification of the
-full golden path, including the cross-end-user save-accumulation guarantee). See `README.md`
-for how to run it and the intentional POC limitations (single active dataset, no admin
-directory, no CSRF token, full-rewrite-on-save).
+The POC is functionally complete and tested (73 pytest cases + manual browser verification of
+the full golden path, including cross-end-user save/ship accumulation, multi-dataset isolation,
+and three-tier role gating). See `README.md` for how to run it and the intentional POC
+limitations (no CSRF token, full-rewrite-on-ship).
 
 ## Architecture summary
 
 FastAPI + SQLAlchemy + SQLite, server-rendered Jinja2 templates, vanilla JS (no frontend build
 step). See `CLAUDE.md` for the file-by-file breakdown and the invariants that must not regress.
 
-Key design decision worth restating here: saves are computed from **persisted** per-cell edits
-(`CellEditValue`), not just the edits in the current request, and the target table is fully
-rewritten from all persisted edits on every save. This is what lets two different end users save
-their own rows independently without one clobbering the other's earlier corrections.
+Two design decisions worth restating here:
+
+- **Datasets coexist.** Ingesting never wipes a prior dataset — each ingest creates a new one,
+  independently configured, with its own end-user assignments and target table.
+- **Autosave (persist) and Ship (publish) are separate.** End-user edits save immediately into
+  the app's own storage (`CellEditValue`) as they work, but the target table is only rewritten
+  when a dataset is explicitly shipped — computed from *every* persisted edit across *every* end
+  user at that moment, not just whoever just clicked Ship. This is what lets two different end
+  users ship their own work independently without one clobbering the other's earlier
+  corrections.
 
 ## Features delivered
 
-- xlsx upload ingestion and generic DB-connector ingestion, both fully working, converging on
-  the same internal row representation.
-- Admin panel: raw data view, exposed-column selection (4–6, checkboxes), per-cell flagging with
-  custom dropdown options, end-user account management, target-table naming.
-- Row assignment, two ways:
-  - Per-row "Assign to" dropdown for a single row.
-  - **Multi-select bulk share**: tick multiple rows via checkboxes, pick an end user from
-    "Share selected rows with", and assign them all in one action
-    (`PUT /admin/rows/assign-bulk`). Both paths write to the same `RawRow.assigned_enduser_id`
-    field — bulk assignment is a UX convenience, not a different data model.
-- **Custom columns**: admin adds a blank column that doesn't exist in the source data (`POST
-  /admin/columns`, name + type), typed as either a fixed dropdown (admin-defined options) or
-  free text (up to 500 characters). Custom columns are always shown to every end user with an
-  assigned row — they don't go through the 4–6 exposed-column selection or per-cell flagging,
-  since the whole column is inherently editable by design. Deletable via `DELETE
-  /admin/columns/{id}` (ingested columns cannot be deleted this way).
-- End-user grid: strictly scoped to the caller's assigned rows, read-only vs. editable cells
-  (dropdown or free text) driven entirely by server-side rule state. A search box filters the
-  visible rows client-side; the same search box is on the admin's raw-data table.
-- **Autosave**: every cell edit saves immediately (debounced for free-text fields) through the
-  same validated `POST /review/save` endpoint used by the manual Save button — no separate
-  "fast path," no relaxed validation. An inline per-cell status ("Saving…" / "Saved" / error)
-  gives feedback without needing to click Save.
-- Save flow with cross-end-user accumulation (see above) and ownership/option validation that
-  rejects tampered requests with a 422.
+- xlsx upload ingestion and generic DB-connector ingestion (via a named `DB_CONN_<NAME>`
+  connection or a raw connection string), both fully working, converging on the same internal
+  row representation. Every ingest creates a new dataset alongside any existing ones.
+- Named DB connections (`app/connections.py`): configured via `DB_CONN_<NAME>` env vars, listed
+  by name only to the admin UI (`GET /admin/db-connections`) — the actual connection strings
+  never leave the server.
+- Admin panel: dataset picker (switch which dataset you're configuring), raw data view,
+  exposed-column selection (4–6, checkboxes), per-cell flagging with custom dropdown options,
+  end-user account management, per-dataset target-table naming, per-dataset metadata view
+  (`GET /admin/datasets/{id}/metadata` — input/output column schema, read live), and a manual
+  "Ship to DB now" action.
+- Row assignment, two ways: a per-row "Assign to" dropdown, or a multi-select bulk share
+  (`PUT /admin/datasets/{id}/rows/assign-bulk`). Both write to the same
+  `RawRow.assigned_enduser_id` field — bulk assignment is a UX convenience, not a different data
+  model.
+- **Custom columns**: admin adds a blank column that doesn't exist in the source data
+  (`POST /admin/datasets/{id}/columns`, name + type), typed as either a fixed dropdown
+  (admin-defined options) or free text (up to 500 characters). Always shown to every end user
+  with an assigned row, independent of the 4–6 exposed-column selection.
+- **Custom rows**: admin adds a wholly blank row (`POST /admin/datasets/{id}/rows`, no source
+  data) that's assignable and flaggable exactly like an ingested row.
+- End-user grid: aggregates across every dataset the caller has rows in, one section per
+  dataset, each scoped to that caller's assigned rows only. A search box filters the visible
+  rows client-side; the same search box is on the admin's raw-data table.
+- **Autosave**: every cell edit persists immediately (debounced for free-text fields) via
+  `POST /review/save`, with an inline per-cell status ("Saving…" / "Saved" / error). This never
+  touches the target table on its own.
+- **Ship to DB**: an explicit action, available to both end users (per dataset they have rows
+  in) and admins (any dataset), that publishes the dataset's current state — raw data plus every
+  persisted edit from every end user — into the target table. Rejects (403) an end user shipping
+  a dataset they have no rows in; rejects (400) shipping before a target table name is set.
+- Ownership/option validation on every edit that rejects tampered requests with a 422, whether
+  submitted via autosave or otherwise.
+- **Admin directory**: a master admin (the original shared `ADMIN_PASSWORD`) can create/remove
+  named admin accounts (`POST/GET/DELETE /admin/admins`, master-admin-only). A named admin has
+  identical access to everything else an admin can do — the only restriction is that only the
+  master admin can manage admin accounts themselves.
+
+## Confirmed design decisions (not open questions)
+
+- **A row has exactly one assigned end user, permanently.** Explicitly confirmed with the
+  project owner — this is not a POC shortcut to revisit later. Two end users must never see the
+  same row. Don't propose or build a many-to-many row/end-user model.
 
 ## Roadmap / not yet built
 
 These are explicitly out of scope for the current POC but the schema/architecture was kept
 flexible enough to add them without a rewrite:
 
-- **Multiple concurrent datasets.** Today ingesting new data replaces the single active dataset
-  entirely. The stated future direction: several named datasets exist at once, and the admin
-  decides which dataset goes to which end user (a `DatasetAccess`-style join table is the
-  natural extension — see `CLAUDE.md` invariants).
-- **A real admin directory.** Today there's one shared `ADMIN_PASSWORD` for all admin access.
-  Multiple named admin accounts (mirroring how end users already work) are planned.
 - **Frontend redesign.** The current UI is intentionally plain (no design system, no build
   step) — it exists to prove the workflow, not to be the final look. The design direction for
   the real frontend is meant to follow the **`maya-math`** repo's conventions as the default

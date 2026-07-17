@@ -39,7 +39,8 @@ The multi-select bulk row-share feature is the reference example for "add a new 
 interaction":
 
 1. Schema (`app/schemas.py`): a request/response Pydantic model.
-2. Endpoint (`app/routers/admin.py`): validate inputs against the active dataset before writing.
+2. Endpoint (`app/routers/admin.py`): dataset-scoped controls take `dataset_id` as a path
+   parameter and validate inputs against that specific dataset before writing.
 3. Static skeleton (`admin.html`): a small, clearly-labeled control block (see
    `.bulk-assign-bar`), not woven into the existing table markup.
 4. `app.js`: extend `state`, add a `render*()` function if there's new state to reflect, wire
@@ -57,15 +58,32 @@ unless a table grows large enough that loading everything client-side stops bein
 Call the filter function again after any re-render (`applyRawTableFilter()` /
 `applyGridFilter()`) so the current search term still applies to freshly-rendered rows.
 
-### Autosave pattern (end-user grid)
+### Autosave vs. Ship (end-user grid)
 
 Editable cells in `review.html` save on `change` (dropdowns) or a `debounce`d `input` event
 (free text, ~500ms) — see `saveOneEdit()` in `initReviewPage()`. Each editable `<td>` gets its
 own `.cell-status` element showing "Saving…" / "Saved" / the error message, scoped to that cell
-so one failing save doesn't clobber another cell's status. The manual Save button is a fallback
-that resubmits every currently-rendered editable value in one batch — keep both paths (autosave
-+ manual) going through the same `POST /review/save` call shape (`{edits: [...]}`), don't give
-manual Save a different request format.
+so one failing save doesn't clobber another cell's status. This only persists the edit
+(`POST /review/save`) — it does **not** publish to the target table.
+
+Each dataset section (`renderDatasetSection()`) has its own "Ship to DB" button
+(`POST /review/datasets/{id}/ship`), since shipping is a per-dataset action and an end user may
+have rows in several datasets at once (see `.claude/skills/backend/SKILL.md`'s multi-dataset
+note). Don't add a page-level "ship everything" button — always scope shipping to one dataset
+section.
+
+### Multi-dataset grid layout
+
+The grid API returns `{datasets: [...]}`, so `initReviewPage()` renders one
+`.dataset-section` per entry (heading + its own table + its own Ship button + its own status
+line) rather than one flat table. `attachSearchFilter` still works unmodified across multiple
+sections since it filters any `<tbody> <tr>` under the wrapping `#grid-wrap`, regardless of how
+many `<table>`s are inside it.
+
+On the admin side, `admin.html`'s "1. Datasets" section holds a `<select id="dataset-select">`
+populated from `GET /admin/datasets`; `state.currentDatasetId` in `app.js` drives every
+subsequent dataset-scoped call. Ingesting sets `state.currentDatasetId` to the newly-created
+dataset and refreshes — a new ingest doesn't require the admin to manually find and select it.
 
 ### Admin-added ("custom") columns are visually distinct, not click-to-configure
 

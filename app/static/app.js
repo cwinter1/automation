@@ -48,6 +48,8 @@ function attachSearchFilter(inputEl, wrapEl) {
 
 function initAdminPage() {
   const state = {
+    datasets: [],
+    currentDatasetId: null,
     columns: [],
     rows: [],
     exposedIds: new Set(),
@@ -61,6 +63,7 @@ function initAdminPage() {
   const targetStatus = document.getElementById("target-status");
   const bulkSelectedCount = document.getElementById("bulk-selected-count");
   const bulkAssignSelect = document.getElementById("bulk-assign-select");
+  const datasetSelect = document.getElementById("dataset-select");
 
   const rawTableWrap = document.getElementById("raw-table-wrap");
   const applyRawTableFilter = attachSearchFilter(document.getElementById("raw-table-search"), rawTableWrap);
@@ -78,12 +81,105 @@ function initAdminPage() {
   }
 
   async function refreshAll() {
-    const [dataset, exposed, rules, endUsers, target] = await Promise.all([
-      api("GET", "/admin/dataset").catch(() => null),
-      api("GET", "/admin/exposed-columns").catch(() => []),
-      api("GET", "/admin/cell-rules").catch(() => []),
-      api("GET", "/admin/endusers").catch(() => []),
-      api("GET", "/admin/target-table").catch(() => ({ table_name: null })),
+    await refreshDatasetList();
+    await Promise.all([refreshEndUsers(), refreshConnectionNames(), refreshAdminUsers()]);
+    await refreshCurrentDataset();
+  }
+
+  async function refreshAdminUsers() {
+    // Only present in the DOM for the master admin (see admin.html's role check).
+    const list = document.getElementById("admin-user-list");
+    if (!list) return;
+    const admins = await api("GET", "/admin/admins").catch(() => []);
+    list.innerHTML = "";
+    for (const a of admins) {
+      const li = document.createElement("li");
+      li.textContent = a.username + " ";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Remove";
+      del.addEventListener("click", async () => {
+        await api("DELETE", `/admin/admins/${a.id}`);
+        await refreshAdminUsers();
+      });
+      li.appendChild(del);
+      list.appendChild(li);
+    }
+  }
+
+  async function refreshDatasetList() {
+    state.datasets = await api("GET", "/admin/datasets").catch(() => []);
+
+    if (state.currentDatasetId && !state.datasets.some((d) => d.id === state.currentDatasetId)) {
+      state.currentDatasetId = null;
+    }
+    if (!state.currentDatasetId && state.datasets.length) {
+      state.currentDatasetId = state.datasets[0].id;
+    }
+
+    datasetSelect.innerHTML = "";
+    if (!state.datasets.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "— no datasets yet —";
+      datasetSelect.appendChild(opt);
+    }
+    for (const ds of state.datasets) {
+      const opt = document.createElement("option");
+      opt.value = ds.id;
+      opt.textContent = `${ds.label} (${ds.row_count} rows, ${ds.column_count} cols)`;
+      if (ds.id === state.currentDatasetId) opt.selected = true;
+      datasetSelect.appendChild(opt);
+    }
+
+    const list = document.getElementById("dataset-list");
+    list.innerHTML = "";
+    for (const ds of state.datasets) {
+      const li = document.createElement("li");
+      li.textContent = `${ds.label} — target table: ${ds.target_table_name || "(not set)"}`;
+      list.appendChild(li);
+    }
+  }
+
+  async function refreshConnectionNames() {
+    const result = await api("GET", "/admin/db-connections").catch(() => ({ names: [] }));
+    const select = document.getElementById("db-conn-select");
+    select.innerHTML = "";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = result.names.length ? "— none selected —" : "— none configured —";
+    select.appendChild(noneOpt);
+    for (const name of result.names) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    }
+  }
+
+  async function refreshCurrentDataset() {
+    const id = state.currentDatasetId;
+    if (!id) {
+      state.columns = [];
+      state.rows = [];
+      state.exposedIds = new Set();
+      state.cellRules = {};
+      state.targetTable = null;
+      document.getElementById("target-table-name").value = "";
+      state.selectedRows.clear();
+      renderAdminColumnList();
+      renderBulkAssignSelect();
+      renderRawTable();
+      updateBulkSelectedCount();
+      applyRawTableFilter();
+      return;
+    }
+
+    const [dataset, exposed, rules, target] = await Promise.all([
+      api("GET", `/admin/datasets/${id}`).catch(() => null),
+      api("GET", `/admin/datasets/${id}/exposed-columns`).catch(() => []),
+      api("GET", `/admin/datasets/${id}/cell-rules`).catch(() => []),
+      api("GET", `/admin/datasets/${id}/target-table`).catch(() => ({ table_name: null })),
     ]);
 
     state.columns = dataset ? dataset.columns : [];
@@ -91,17 +187,20 @@ function initAdminPage() {
     state.exposedIds = new Set(exposed.map((e) => e.column_def_id));
     state.cellRules = {};
     for (const r of rules) state.cellRules[ruleKey(r.row_index, r.column_def_id)] = r.options;
-    state.endUsers = endUsers;
     state.targetTable = target.table_name;
 
     document.getElementById("target-table-name").value = state.targetTable || "";
     state.selectedRows.clear();
-    renderEndUsers();
     renderAdminColumnList();
     renderBulkAssignSelect();
     renderRawTable();
     updateBulkSelectedCount();
     applyRawTableFilter();
+  }
+
+  async function refreshEndUsers() {
+    state.endUsers = await api("GET", "/admin/endusers").catch(() => []);
+    renderEndUsers();
   }
 
   function renderAdminColumnList() {
@@ -116,11 +215,31 @@ function initAdminPage() {
       del.textContent = "Remove";
       del.addEventListener("click", async () => {
         try {
-          await api("DELETE", `/admin/columns/${col.id}`);
-          await refreshAll();
+          await api("DELETE", `/admin/datasets/${state.currentDatasetId}/columns/${col.id}`);
+          await refreshCurrentDataset();
         } catch (err) {
           window.alert(err.message);
         }
+      });
+      li.appendChild(del);
+      list.appendChild(li);
+    }
+  }
+
+  function renderEndUsers() {
+    const list = document.getElementById("enduser-list");
+    list.innerHTML = "";
+    for (const u of state.endUsers) {
+      const li = document.createElement("li");
+      li.textContent = u.username + " ";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Remove";
+      del.addEventListener("click", async () => {
+        await api("DELETE", `/admin/endusers/${u.id}`);
+        await refreshEndUsers();
+        renderBulkAssignSelect();
+        renderRawTable();
       });
       li.appendChild(del);
       list.appendChild(li);
@@ -146,29 +265,14 @@ function initAdminPage() {
     bulkSelectedCount.textContent = `${n} row${n === 1 ? "" : "s"} selected`;
   }
 
-  function renderEndUsers() {
-    const list = document.getElementById("enduser-list");
-    list.innerHTML = "";
-    for (const u of state.endUsers) {
-      const li = document.createElement("li");
-      li.textContent = u.username + " ";
-      const del = document.createElement("button");
-      del.type = "button";
-      del.textContent = "Remove";
-      del.addEventListener("click", async () => {
-        await api("DELETE", `/admin/endusers/${u.id}`);
-        await refreshAll();
-      });
-      li.appendChild(del);
-      list.appendChild(li);
-    }
-  }
-
   function renderRawTable() {
-    const wrap = document.getElementById("raw-table-wrap");
-    wrap.innerHTML = "";
+    rawTableWrap.innerHTML = "";
+    if (!state.currentDatasetId) {
+      rawTableWrap.textContent = "No dataset selected. Ingest one above.";
+      return;
+    }
     if (!state.columns.length) {
-      wrap.textContent = "No dataset ingested yet.";
+      rawTableWrap.textContent = "This dataset has no columns.";
       return;
     }
 
@@ -226,7 +330,7 @@ function initAdminPage() {
       tr.appendChild(selectTd);
 
       const rowTh = document.createElement("th");
-      rowTh.textContent = row.row_index;
+      rowTh.textContent = row.is_admin_added ? `${row.row_index} (new)` : row.row_index;
       tr.appendChild(rowTh);
 
       for (const col of state.columns) {
@@ -265,7 +369,7 @@ function initAdminPage() {
       }
       select.addEventListener("change", async () => {
         const enduser_id = select.value ? parseInt(select.value, 10) : null;
-        await api("PUT", `/admin/rows/${row.row_index}/assign`, { enduser_id });
+        await api("PUT", `/admin/datasets/${state.currentDatasetId}/rows/${row.row_index}/assign`, { enduser_id });
       });
       assignTd.appendChild(select);
       tr.appendChild(assignTd);
@@ -273,7 +377,7 @@ function initAdminPage() {
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    rawTableWrap.appendChild(table);
   }
 
   async function onColumnToggle() {
@@ -287,9 +391,9 @@ function initAdminPage() {
       return;
     }
     try {
-      await api("PUT", "/admin/exposed-columns", { column_def_ids: selected });
+      await api("PUT", `/admin/datasets/${state.currentDatasetId}/exposed-columns`, { column_def_ids: selected });
       ingestStatus.textContent = "Exposed columns updated.";
-      await refreshAll();
+      await refreshCurrentDataset();
     } catch (err) {
       ingestStatus.textContent = err.message;
     }
@@ -310,18 +414,26 @@ function initAdminPage() {
 
     try {
       if (options.length === 0) {
-        await api("DELETE", `/admin/cell-rules/${row.row_index}/${col.id}`);
+        await api("DELETE", `/admin/datasets/${state.currentDatasetId}/cell-rules/${row.row_index}/${col.id}`);
       } else {
-        await api("PUT", `/admin/cell-rules/${row.row_index}/${col.id}`, { options });
+        await api("PUT", `/admin/datasets/${state.currentDatasetId}/cell-rules/${row.row_index}/${col.id}`, {
+          options,
+        });
       }
-      await refreshAll();
+      await refreshCurrentDataset();
     } catch (err) {
       window.alert(err.message);
     }
   }
 
+  datasetSelect.addEventListener("change", async () => {
+    state.currentDatasetId = datasetSelect.value ? parseInt(datasetSelect.value, 10) : null;
+    await refreshCurrentDataset();
+  });
+
   document.getElementById("admin-column-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    if (!state.currentDatasetId) return;
     const name = document.getElementById("admin-column-name").value;
     const input_type = columnTypeSelect.value;
     const optionsRaw = document.getElementById("admin-column-options").value;
@@ -330,16 +442,27 @@ function initAdminPage() {
         ? optionsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
         : null;
     try {
-      await api("POST", "/admin/columns", { name, input_type, options });
+      await api("POST", `/admin/datasets/${state.currentDatasetId}/columns`, { name, input_type, options });
       document.getElementById("admin-column-form").reset();
       toggleColumnOptionsField();
-      await refreshAll();
+      await refreshCurrentDataset();
+    } catch (err) {
+      window.alert(err.message);
+    }
+  });
+
+  document.getElementById("add-row-btn").addEventListener("click", async () => {
+    if (!state.currentDatasetId) return;
+    try {
+      await api("POST", `/admin/datasets/${state.currentDatasetId}/rows`, {});
+      await refreshCurrentDataset();
     } catch (err) {
       window.alert(err.message);
     }
   });
 
   document.getElementById("bulk-assign-btn").addEventListener("click", async () => {
+    if (!state.currentDatasetId) return;
     const rowIndices = Array.from(state.selectedRows);
     if (rowIndices.length === 0) {
       ingestStatus.textContent = "Select at least one row to share.";
@@ -347,9 +470,12 @@ function initAdminPage() {
     }
     const enduser_id = bulkAssignSelect.value ? parseInt(bulkAssignSelect.value, 10) : null;
     try {
-      const result = await api("PUT", "/admin/rows/assign-bulk", { row_indices: rowIndices, enduser_id });
+      const result = await api("PUT", `/admin/datasets/${state.currentDatasetId}/rows/assign-bulk`, {
+        row_indices: rowIndices,
+        enduser_id,
+      });
       ingestStatus.textContent = `Shared ${result.updated} row(s).`;
-      await refreshAll();
+      await refreshCurrentDataset();
     } catch (err) {
       ingestStatus.textContent = err.message;
     }
@@ -359,12 +485,16 @@ function initAdminPage() {
     ev.preventDefault();
     const file = document.getElementById("xlsx-file").files[0];
     if (!file) return;
+    const label = document.getElementById("xlsx-label").value;
     const form = new FormData();
     form.append("file", file);
+    const url = "/admin/ingest/xlsx" + (label ? `?label=${encodeURIComponent(label)}` : "");
     ingestStatus.textContent = "Ingesting...";
     try {
-      const result = await api("POST", "/admin/ingest/xlsx", form);
-      ingestStatus.textContent = `Ingested ${result.row_count} rows, ${result.columns.length} columns.`;
+      const result = await api("POST", url, form);
+      ingestStatus.textContent = `Ingested "${result.label}": ${result.row_count} rows, ${result.columns.length} columns.`;
+      state.currentDatasetId = result.dataset_id;
+      document.getElementById("xlsx-form").reset();
       await refreshAll();
     } catch (err) {
       ingestStatus.textContent = err.message;
@@ -373,12 +503,17 @@ function initAdminPage() {
 
   document.getElementById("db-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const connection_string = document.getElementById("db-conn").value;
+    const connSelect = document.getElementById("db-conn-select").value;
+    const connRaw = document.getElementById("db-conn").value;
+    const connection = connSelect || connRaw;
     const table_name = document.getElementById("db-table").value;
+    const label = document.getElementById("db-label").value || null;
     ingestStatus.textContent = "Ingesting...";
     try {
-      const result = await api("POST", "/admin/ingest/db", { connection_string, table_name });
-      ingestStatus.textContent = `Ingested ${result.row_count} rows, ${result.columns.length} columns.`;
+      const result = await api("POST", "/admin/ingest/db", { connection, table_name, label });
+      ingestStatus.textContent = `Ingested "${result.label}": ${result.row_count} rows, ${result.columns.length} columns.`;
+      state.currentDatasetId = result.dataset_id;
+      document.getElementById("db-form").reset();
       await refreshAll();
     } catch (err) {
       ingestStatus.textContent = err.message;
@@ -392,20 +527,64 @@ function initAdminPage() {
     try {
       await api("POST", "/admin/endusers", { username, password });
       document.getElementById("enduser-form").reset();
-      await refreshAll();
+      await refreshEndUsers();
+      renderBulkAssignSelect();
+      renderRawTable();
     } catch (err) {
       window.alert(err.message);
     }
   });
 
+  const adminUserForm = document.getElementById("admin-user-form");
+  if (adminUserForm) {
+    adminUserForm.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const username = document.getElementById("admin-user-username").value;
+      const password = document.getElementById("admin-user-password").value;
+      try {
+        await api("POST", "/admin/admins", { username, password });
+        adminUserForm.reset();
+        await refreshAdminUsers();
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
+  }
+
   document.getElementById("target-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    if (!state.currentDatasetId) return;
     const table_name = document.getElementById("target-table-name").value;
     try {
-      await api("PUT", "/admin/target-table", { table_name });
+      await api("PUT", `/admin/datasets/${state.currentDatasetId}/target-table`, { table_name });
       targetStatus.textContent = "Target table saved.";
+      await refreshDatasetList();
     } catch (err) {
       targetStatus.textContent = err.message;
+    }
+  });
+
+  document.getElementById("ship-btn").addEventListener("click", async () => {
+    if (!state.currentDatasetId) return;
+    try {
+      const result = await api("POST", `/admin/datasets/${state.currentDatasetId}/ship`, {});
+      targetStatus.textContent = `Shipped ${result.row_count} rows to "${result.table_name}".`;
+    } catch (err) {
+      targetStatus.textContent = err.message;
+    }
+  });
+
+  document.getElementById("metadata-btn").addEventListener("click", async () => {
+    const out = document.getElementById("metadata-out");
+    if (!state.currentDatasetId) {
+      out.textContent = "No dataset selected.";
+      return;
+    }
+    try {
+      const meta = await api("GET", `/admin/datasets/${state.currentDatasetId}/metadata`);
+      out.textContent = JSON.stringify(meta, null, 2);
+    } catch (err) {
+      out.textContent = err.message;
     }
   });
 
@@ -415,28 +594,30 @@ function initAdminPage() {
 /* ---------------- Review page ---------------- */
 
 function initReviewPage() {
-  let grid = { columns: [], rows: [] };
-  const status = document.getElementById("save-status");
+  let datasets = [];
+  const pageStatus = document.getElementById("page-status");
   const wrap = document.getElementById("grid-wrap");
   const applyGridFilter = attachSearchFilter(document.getElementById("grid-search"), wrap);
 
   async function loadGrid() {
     try {
-      grid = await api("GET", "/review/grid");
-      status.textContent = "";
+      const grid = await api("GET", "/review/grid");
+      datasets = grid.datasets;
+      pageStatus.textContent = "";
     } catch (err) {
-      status.textContent = err.message;
-      grid = { columns: [], rows: [] };
+      pageStatus.textContent = err.message;
+      datasets = [];
     }
-    renderGrid();
+    renderAll();
     applyGridFilter();
   }
 
-  async function saveOneEdit(rowIndex, colId, value, cellStatusEl) {
+  async function saveOneEdit(datasetId, rowIndex, colId, value, cellStatusEl) {
     cellStatusEl.textContent = "Saving…";
     cellStatusEl.classList.remove("cell-status-error");
     try {
       await api("POST", "/review/save", {
+        dataset_id: datasetId,
         edits: [{ row_index: rowIndex, column_def_id: colId, value }],
       });
       cellStatusEl.textContent = "Saved";
@@ -446,14 +627,36 @@ function initReviewPage() {
     }
   }
 
-  function renderGrid() {
+  async function shipDataset(datasetId, shipStatusEl) {
+    shipStatusEl.textContent = "Shipping…";
+    try {
+      const result = await api("POST", `/review/datasets/${datasetId}/ship`, {});
+      shipStatusEl.textContent = `Shipped ${result.row_count} rows to "${result.table_name}".`;
+    } catch (err) {
+      shipStatusEl.textContent = err.message;
+    }
+  }
+
+  function renderAll() {
     wrap.innerHTML = "";
-    if (!grid.rows.length) {
+    if (!datasets.length) {
       wrap.textContent = "No rows assigned to you yet.";
       return;
     }
+    for (const ds of datasets) {
+      wrap.appendChild(renderDatasetSection(ds));
+    }
+  }
 
-    const columns = [...grid.columns].sort((a, b) => a.order - b.order);
+  function renderDatasetSection(ds) {
+    const section = document.createElement("div");
+    section.className = "dataset-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = ds.label;
+    section.appendChild(heading);
+
+    const columns = [...ds.columns].sort((a, b) => a.order - b.order);
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const headRow = document.createElement("tr");
@@ -466,7 +669,7 @@ function initReviewPage() {
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    for (const row of grid.rows) {
+    for (const row of ds.rows) {
       const tr = document.createElement("tr");
       for (const col of columns) {
         const cell = row.cells.find((c) => c.column_def_id === col.column_def_id);
@@ -479,10 +682,8 @@ function initReviewPage() {
             const input = document.createElement("input");
             input.type = "text";
             input.value = cell.value === null || cell.value === undefined ? "" : cell.value;
-            input.dataset.row = row.row_index;
-            input.dataset.col = col.column_def_id;
             const debouncedSave = debounce(
-              () => saveOneEdit(row.row_index, col.column_def_id, input.value, cellStatusEl),
+              () => saveOneEdit(ds.dataset_id, row.row_index, col.column_def_id, input.value, cellStatusEl),
               500
             );
             input.addEventListener("input", () => {
@@ -499,10 +700,8 @@ function initReviewPage() {
               if (opt === cell.value) optionEl.selected = true;
               select.appendChild(optionEl);
             }
-            select.dataset.row = row.row_index;
-            select.dataset.col = col.column_def_id;
             select.addEventListener("change", () =>
-              saveOneEdit(row.row_index, col.column_def_id, select.value, cellStatusEl)
+              saveOneEdit(ds.dataset_id, row.row_index, col.column_def_id, select.value, cellStatusEl)
             );
             td.appendChild(select);
           }
@@ -515,23 +714,19 @@ function initReviewPage() {
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    wrap.appendChild(table);
-  }
+    section.appendChild(table);
 
-  document.getElementById("save-btn").addEventListener("click", async () => {
-    const inputs = document.querySelectorAll("#grid-wrap select, #grid-wrap input[type=text]");
-    const edits = Array.from(inputs).map((el) => ({
-      row_index: parseInt(el.dataset.row, 10),
-      column_def_id: parseInt(el.dataset.col, 10),
-      value: el.value,
-    }));
-    try {
-      const result = await api("POST", "/review/save", { edits });
-      status.textContent = `Saved ${result.row_count} rows to "${result.table_name}".`;
-    } catch (err) {
-      status.textContent = err.message;
-    }
-  });
+    const shipBtn = document.createElement("button");
+    shipBtn.type = "button";
+    shipBtn.textContent = "Ship to DB";
+    const shipStatus = document.createElement("span");
+    shipStatus.className = "status";
+    shipBtn.addEventListener("click", () => shipDataset(ds.dataset_id, shipStatus));
+    section.appendChild(shipBtn);
+    section.appendChild(shipStatus);
+
+    return section;
+  }
 
   loadGrid();
 }

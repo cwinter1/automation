@@ -4,9 +4,18 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_enduser_id, require_enduser, require_enduser_page
 from app.db import get_db
-from app.models import CellEditRule, CellEditValue, ColumnDef, Dataset, ExposedColumn, RawRow
-from app.schemas import GridCell, GridColumn, GridResponse, GridRow, SaveRequest, SaveResponse
-from app.target import EditRequest, NotConfiguredError, ValidationError, save_corrected_dataset
+from app.models import CellEditRule, CellEditValue, ColumnDef, Dataset, ExposedColumn, RawRow, TargetTableSetting
+from app.schemas import (
+    DatasetGrid,
+    GridCell,
+    GridColumn,
+    GridResponse,
+    GridRow,
+    SaveEditsResponse,
+    SaveRequest,
+    ShipResponse,
+)
+from app.target import EditRequest, NotConfiguredError, ValidationError, apply_enduser_edits, ship_dataset_to_db
 
 templates = Jinja2Templates(directory="app/templates")
 
@@ -19,16 +28,22 @@ def review_page(request: Request):
     return templates.TemplateResponse(request, "review.html", {})
 
 
-def _get_active_dataset(db: Session) -> Dataset:
-    dataset = db.query(Dataset).filter(Dataset.is_active.is_(True)).first()
+def _get_dataset(db: Session, dataset_id: int) -> Dataset:
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset is None:
-        raise HTTPException(status_code=400, detail="No dataset has been ingested yet")
+        raise HTTPException(status_code=404, detail="Dataset not found")
     return dataset
 
 
-@api_router.get("/grid", response_model=GridResponse)
-def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_enduser_id)):
-    dataset = _get_active_dataset(db)
+def _build_dataset_grid(db: Session, dataset: Dataset, enduser_id: int) -> DatasetGrid | None:
+    raw_rows = (
+        db.query(RawRow)
+        .filter(RawRow.dataset_id == dataset.id, RawRow.assigned_enduser_id == enduser_id)
+        .order_by(RawRow.row_index)
+        .all()
+    )
+    if not raw_rows:
+        return None
 
     exposed = (
         db.query(ExposedColumn, ColumnDef)
@@ -43,8 +58,6 @@ def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_en
     ]
     column_defs = {col.id: col for _, col in exposed}
 
-    # Admin-added columns are always part of the report, regardless of the 4-6
-    # exposed-column selection (which only governs ingested source columns).
     next_order = len(columns)
     admin_columns = (
         db.query(ColumnDef)
@@ -65,12 +78,7 @@ def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_en
     edit_values = db.query(CellEditValue).filter(CellEditValue.dataset_id == dataset.id).all()
     edit_map = {(e.row_index, e.column_def_id): e.value for e in edit_values}
 
-    raw_rows = (
-        db.query(RawRow)
-        .filter(RawRow.dataset_id == dataset.id, RawRow.assigned_enduser_id == enduser_id)
-        .order_by(RawRow.row_index)
-        .all()
-    )
+    setting = db.query(TargetTableSetting).filter(TargetTableSetting.dataset_id == dataset.id).first()
 
     grid_rows = []
     for row in raw_rows:
@@ -97,26 +105,79 @@ def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_en
         cells.sort(key=lambda c: next(gc.order for gc in columns if gc.column_def_id == c.column_def_id))
         grid_rows.append(GridRow(row_index=row.row_index, cells=cells))
 
-    return GridResponse(columns=columns, rows=grid_rows)
+    return DatasetGrid(
+        dataset_id=dataset.id,
+        label=dataset.label,
+        target_table_name=setting.table_name if setting else None,
+        columns=columns,
+        rows=grid_rows,
+    )
 
 
-@api_router.post("/save", response_model=SaveResponse)
+@api_router.get("/grid", response_model=GridResponse)
+def get_grid(db: Session = Depends(get_db), enduser_id: int = Depends(current_enduser_id)):
+    dataset_ids = [
+        row[0]
+        for row in db.query(RawRow.dataset_id)
+        .filter(RawRow.assigned_enduser_id == enduser_id)
+        .distinct()
+        .all()
+    ]
+    datasets = (
+        db.query(Dataset).filter(Dataset.id.in_(dataset_ids)).order_by(Dataset.created_at.desc()).all()
+        if dataset_ids
+        else []
+    )
+
+    grids = []
+    for dataset in datasets:
+        grid = _build_dataset_grid(db, dataset, enduser_id)
+        if grid is not None:
+            grids.append(grid)
+
+    return GridResponse(datasets=grids)
+
+
+@api_router.post("/save", response_model=SaveEditsResponse)
 def save_grid(
     payload: SaveRequest,
     db: Session = Depends(get_db),
     enduser_id: int = Depends(current_enduser_id),
 ):
-    dataset = _get_active_dataset(db)
+    dataset = _get_dataset(db, payload.dataset_id)
     edits = [EditRequest(row_index=e.row_index, column_def_id=e.column_def_id, value=e.value) for e in payload.edits]
 
     try:
-        result = save_corrected_dataset(db, dataset, enduser_id, edits)
+        apply_enduser_edits(db, dataset, enduser_id, edits)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail={"errors": exc.errors}) from None
+
+    return SaveEditsResponse(saved=len(edits))
+
+
+@api_router.post("/datasets/{dataset_id}/ship", response_model=ShipResponse)
+def ship_grid(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    enduser_id: int = Depends(current_enduser_id),
+):
+    dataset = _get_dataset(db, dataset_id)
+
+    has_rows = (
+        db.query(RawRow)
+        .filter(RawRow.dataset_id == dataset.id, RawRow.assigned_enduser_id == enduser_id)
+        .first()
+        is not None
+    )
+    if not has_rows:
+        raise HTTPException(status_code=403, detail="You have no rows assigned in this dataset")
+
+    try:
+        result = ship_dataset_to_db(db, dataset)
     except NotConfiguredError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
-    return SaveResponse(table_name=result.table_name, row_count=result.row_count)
+    return ShipResponse(table_name=result.table_name, row_count=result.row_count)
 
 
 router = APIRouter()

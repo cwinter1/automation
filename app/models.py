@@ -26,13 +26,25 @@ class EndUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
+class AdminUser(Base):
+    """A named admin account, created by the master admin. Distinct from the master admin
+    itself, which authenticates via the shared ADMIN_PASSWORD env var and has no DB row."""
+
+    __tablename__ = "admin_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class Dataset(Base):
     __tablename__ = "datasets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)  # "xlsx" | "db"
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    is_active: Mapped[bool] = mapped_column(default=True)
 
     columns: Mapped[list["ColumnDef"]] = relationship(
         back_populates="dataset", cascade="all, delete-orphan"
@@ -73,6 +85,7 @@ class RawRow(Base):
     assigned_enduser_id: Mapped[int | None] = mapped_column(
         ForeignKey("end_users.id", ondelete="SET NULL"), nullable=True
     )
+    is_admin_added: Mapped[bool] = mapped_column(default=False)
 
     dataset: Mapped["Dataset"] = relationship(back_populates="rows")
 
