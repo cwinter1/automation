@@ -1,0 +1,125 @@
+:root {
+  color-scheme: light dark;
+  --border: #ccc;
+  --flag: #fff3bf;
+  --flag-border: #e6a817;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.logout-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+main {
+  padding: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.ingest-forms {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+
+.bulk-assign-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.bulk-assign-bar label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+form label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.status {
+  min-height: 1.2em;
+  font-size: 0.9em;
+}
+
+.hint {
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  overflow-x: auto;
+  display: block;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+td.flaggable {
+  cursor: pointer;
+}
+
+td.flagged {
+  background: var(--flag);
+  border-color: var(--flag-border);
+}
+
+.login-wrap {
+  max-width: 500px;
+  margin: 2rem auto;
+}
+
+.login-box {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.error {
+  color: #c0392b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --border: #444;
+    --flag: #4a3c00;
+    --flag-border: #d9a300;
+  }
+}

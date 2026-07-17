@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Review{% endblock %}
+{% block content %}
+<div class="review-wrap">
+  <h2>Your rows</h2>
+  <p class="hint">Locked cells are read-only. Flagged cells show a dropdown — pick the correct value, then Save.</p>
+  <div id="grid-wrap"></div>
+  <button id="save-btn" type="button">Save</button>
+  <p id="save-status" class="status"></p>
+</div>
+{% endblock %}

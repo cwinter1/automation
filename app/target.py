@@ -1,0 +1,173 @@
+from dataclasses import dataclass
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
+from sqlalchemy.orm import Session
+
+from app.db import engine
+from app.models import CellEditRule, CellEditValue, ColumnDef, Dataset, RawRow, TargetTableSetting
+from app.sanitize import validate_identifier
+
+
+class ValidationError(Exception):
+    def __init__(self, errors: list[str]):
+        super().__init__("; ".join(errors))
+        self.errors = errors
+
+
+class NotConfiguredError(Exception):
+    pass
+
+
+@dataclass
+class EditRequest:
+    row_index: int
+    column_def_id: int
+    value: str
+
+
+@dataclass
+class SaveResult:
+    table_name: str
+    row_count: int
+
+
+def _load_cell_rules(db: Session, dataset_id: int) -> dict[tuple[int, int], list[str]]:
+    rules = db.query(CellEditRule).filter(CellEditRule.dataset_id == dataset_id).all()
+    return {(r.row_index, r.column_def_id): r.options for r in rules}
+
+
+def apply_enduser_edits(db: Session, dataset: Dataset, enduser_id: int, edits: list[EditRequest]) -> None:
+    """Validate ownership + flagged-cell + option membership, then upsert CellEditValue rows.
+
+    Raises ValidationError (caller returns 422) if any submitted edit targets a row not
+    assigned to this end user, a cell with no CellEditRule, or a value outside that
+    rule's options — defends against a tampered request body, not just a buggy client.
+    """
+    if not edits:
+        return
+
+    row_owner = {
+        r.row_index: r.assigned_enduser_id
+        for r in db.query(RawRow).filter(RawRow.dataset_id == dataset.id).all()
+    }
+    cell_rules = _load_cell_rules(db, dataset.id)
+
+    errors = []
+    valid_edits = []
+    for edit in edits:
+        owner = row_owner.get(edit.row_index)
+        if owner is None or owner != enduser_id:
+            errors.append(f"Row {edit.row_index} is not assigned to you")
+            continue
+        options = cell_rules.get((edit.row_index, edit.column_def_id))
+        if options is None:
+            errors.append(f"Cell (row {edit.row_index}, column {edit.column_def_id}) is not editable")
+            continue
+        if edit.value not in options:
+            errors.append(
+                f"Value {edit.value!r} is not a valid option for row {edit.row_index}, "
+                f"column {edit.column_def_id}"
+            )
+            continue
+        valid_edits.append(edit)
+
+    if errors:
+        raise ValidationError(errors)
+
+    for edit in valid_edits:
+        existing = (
+            db.query(CellEditValue)
+            .filter(
+                CellEditValue.dataset_id == dataset.id,
+                CellEditValue.row_index == edit.row_index,
+                CellEditValue.column_def_id == edit.column_def_id,
+            )
+            .first()
+        )
+        if existing:
+            existing.value = edit.value
+            existing.edited_by_enduser_id = enduser_id
+        else:
+            db.add(
+                CellEditValue(
+                    dataset_id=dataset.id,
+                    row_index=edit.row_index,
+                    column_def_id=edit.column_def_id,
+                    value=edit.value,
+                    edited_by_enduser_id=enduser_id,
+                )
+            )
+    db.commit()
+
+
+def build_corrected_rows(db: Session, dataset: Dataset) -> tuple[list[ColumnDef], list[dict]]:
+    """Merge raw data with every persisted CellEditValue (across all end users)."""
+    columns = (
+        db.query(ColumnDef)
+        .filter(ColumnDef.dataset_id == dataset.id)
+        .order_by(ColumnDef.order_index)
+        .all()
+    )
+    raw_rows = (
+        db.query(RawRow)
+        .filter(RawRow.dataset_id == dataset.id)
+        .order_by(RawRow.row_index)
+        .all()
+    )
+    edit_values = db.query(CellEditValue).filter(CellEditValue.dataset_id == dataset.id).all()
+    edit_map = {(e.row_index, e.column_def_id): e.value for e in edit_values}
+
+    corrected = []
+    for row in raw_rows:
+        record = {}
+        for col in columns:
+            override = edit_map.get((row.row_index, col.id))
+            record[col.safe_name] = override if override is not None else row.data.get(col.safe_name)
+        corrected.append(record)
+
+    return columns, corrected
+
+
+def create_or_replace_target_table(conn: Connection, table_name: str, columns: list[ColumnDef]) -> None:
+    validate_identifier(table_name)
+    for col in columns:
+        validate_identifier(col.safe_name)
+
+    col_sql = ", ".join(f'"{c.safe_name}" TEXT' for c in columns)
+    conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+    conn.execute(text(f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY AUTOINCREMENT, {col_sql})'))
+
+
+def insert_corrected_rows(conn: Connection, table_name: str, columns: list[ColumnDef], rows: list[dict]) -> int:
+    validate_identifier(table_name)
+    if not rows:
+        return 0
+
+    col_list = ", ".join(f'"{c.safe_name}"' for c in columns)
+    placeholders = ", ".join(f":{c.safe_name}" for c in columns)
+    stmt = text(f'INSERT INTO "{table_name}" ({col_list}) VALUES ({placeholders})')
+    conn.execute(stmt, rows)
+    return len(rows)
+
+
+def save_corrected_dataset(
+    db: Session, dataset: Dataset, enduser_id: int, edits: list[EditRequest]
+) -> SaveResult:
+    apply_enduser_edits(db, dataset, enduser_id, edits)
+
+    setting = (
+        db.query(TargetTableSetting)
+        .filter(TargetTableSetting.dataset_id == dataset.id)
+        .first()
+    )
+    if setting is None:
+        raise NotConfiguredError("Target table has not been configured by the admin")
+
+    columns, rows = build_corrected_rows(db, dataset)
+
+    with engine.begin() as conn:
+        create_or_replace_target_table(conn, setting.table_name, columns)
+        row_count = insert_corrected_rows(conn, setting.table_name, columns, rows)
+
+    return SaveResult(table_name=setting.table_name, row_count=row_count)
