@@ -127,3 +127,9 @@ flexible enough to add them without a rewrite:
 - `tests/` — pytest suite.
 - `.claude/skills/`, `.claude/agents/` — project-specific Claude Code skills and agents (QA, frontend, backend,
   project-manager) for working on this codebase.
+- `ENTERPRISE_READINESS.md` — what's missing to take this from POC to a production deployment.
+- `design/screenshots/` — drop point for real design reference images (see `.claude/skills/frontend/SKILL.md`).
+- `docs/playbook/` — the numbered prompt sequence this POC was actually built from, kept here so
+  the reasoning travels with the code if this repo is forked into production. The same content,
+  kept in sync, also lives in `cwinter1/ai-playbooks` (`playbooks/data-ingestion-correction-poc/`)
+  for reuse on unrelated projects.
